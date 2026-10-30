@@ -4,6 +4,33 @@ This walkthrough will guide you from zero to running the Todo App with GitHub Co
 
 Reference : https://ai-sdlc-workshop-day1-production.up.railway.app/login
 
+## Calendar view (Feature 10)
+
+Open **Calendar** from the todo list to browse a fixed Sunday-to-Saturday monthly
+grid. Dates use `Asia/Singapore`, including todos stored as UTC instants. Previous,
+Next, and Today update `?month=YYYY-MM`; a bookmarked month survives refresh.
+Select any date for a read-only list of its todos, completion states, and holiday.
+Cells show three todos and a count for additional items. Undated todos and future
+recurring occurrences that do not yet exist are not displayed. List-view filters
+do not apply to the calendar.
+
+Seed the shared holiday table before using the holiday overlay:
+
+```bash
+npm run seed:holidays
+```
+
+The idempotent seed respects `DATABASE_PATH` (default: `todos.db`) and currently
+includes **2026 only**, verified against the
+[Singapore Ministry of Manpower holiday calendar](https://www.mom.gov.sg/employment-practices/public-holidays).
+Monday observed dates are labeled as applying to Sunday rest days. Other years
+remain browsable but have no holiday labels until seeded. Update
+`scripts/singapore-holidays-2026.json` / the seed script with verified dates when
+extending coverage; holidays are never fetched from an external service at runtime.
+The authenticated `GET /api/holidays?year=2026&month=11` endpoint includes the full
+42-day visible grid, including adjacent-month dates. Omitting both filters returns
+all seeded holidays; incomplete or invalid filters return `400`.
+
 ---
 
 ## Table of Contents

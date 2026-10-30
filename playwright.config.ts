@@ -9,6 +9,7 @@ export default defineConfig({
   use: {
     ...devices['Desktop Chrome'],
     baseURL: 'http://localhost:3101',
+    timezoneId: 'Asia/Singapore',
     trace: 'retain-on-failure',
   },
   webServer: {

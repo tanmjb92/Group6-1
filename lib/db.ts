@@ -1,6 +1,13 @@
 import Database from 'better-sqlite3';
 import { createChallengeStore } from './auth/challenge-store';
 import { getSingaporeNow } from './timezone';
+import { generateCalendarGrid } from './calendar';
+
+export interface Holiday {
+  id: number;
+  date: string;
+  name: string;
+}
 
 export type Priority = 'high' | 'medium' | 'low';
 export const PRIORITY_VALUES: Priority[] = ['high', 'medium', 'low'];
@@ -131,6 +138,14 @@ function createAuthDatabase(connection: Database.Database) {
     );
     CREATE INDEX IF NOT EXISTS idx_todos_user_id ON todos(user_id);
     CREATE INDEX IF NOT EXISTS idx_todos_due_date ON todos(due_date);
+
+    CREATE TABLE IF NOT EXISTS holidays (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_holidays_date ON holidays(date);
   `);
   const todoColumns = connection.pragma('table_info(todos)') as Array<{ name: string }>;
   if (!todoColumns.some((column) => column.name === 'next_occurrence_created')) {
@@ -341,6 +356,27 @@ function createAuthDatabase(connection: Database.Database) {
     },
   };
 
+  const holidayDB = {
+    findAll(): Holiday[] {
+      return connection.prepare('SELECT id, date, name FROM holidays ORDER BY date').all() as Holiday[];
+    },
+    findByMonth(year: number, month: number): Holiday[] {
+      const cells = generateCalendarGrid(year, month);
+      return connection
+        .prepare('SELECT id, date, name FROM holidays WHERE date >= ? AND date <= ? ORDER BY date')
+        .all(cells[0].date, cells[41].date) as Holiday[];
+    },
+    upsertAll(holidays: Omit<Holiday, 'id'>[]): void {
+      const insert = connection.prepare(
+        `INSERT INTO holidays (date, name) VALUES (?, ?)
+         ON CONFLICT(date) DO UPDATE SET name = excluded.name`,
+      );
+      connection.transaction(() => {
+        for (const holiday of holidays) insert.run(holiday.date, holiday.name);
+      })();
+    },
+  };
+
   const createUserWithAuthenticator = connection.transaction(
     (username: string, authenticator: Omit<NewAuthenticator, 'user_id'>) => {
       const user = userDB.create(username);
@@ -357,6 +393,7 @@ function createAuthDatabase(connection: Database.Database) {
     userDB,
     authenticatorDB,
     todoDB,
+    holidayDB,
     createUserWithAuthenticator,
     challengeStore: createChallengeStore(connection),
     close(): void {
@@ -371,5 +408,6 @@ export const db = database.connection;
 export const userDB = database.userDB;
 export const authenticatorDB = database.authenticatorDB;
 export const todoDB = database.todoDB;
+export const holidayDB = database.holidayDB;
 export const createUserWithAuthenticator = database.createUserWithAuthenticator;
 export const challengeStore = database.challengeStore;
