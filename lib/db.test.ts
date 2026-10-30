@@ -223,11 +223,8 @@ describe('todo database', () => {
     const user = database.userDB.create('todo-owner');
     const otherUser = database.userDB.create('other-owner');
     const todo = database.todoDB.create(user.id, { title: 'Delete me' });
+    database.subtaskDB.create(todo.id, { title: 'Child task' });
     database.connection.exec(`
-      CREATE TABLE subtasks (
-        id INTEGER PRIMARY KEY,
-        todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE
-      );
       CREATE TABLE tags (
         id INTEGER PRIMARY KEY,
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE
@@ -237,7 +234,6 @@ describe('todo database', () => {
         tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE
       );
     `);
-    database.connection.prepare('INSERT INTO subtasks (todo_id) VALUES (?)').run(todo.id);
     const tagId = Number(
       database.connection.prepare('INSERT INTO tags (user_id) VALUES (?)').run(user.id)
         .lastInsertRowid,
@@ -249,12 +245,44 @@ describe('todo database', () => {
     expect(database.todoDB.delete(todo.id, otherUser.id)).toBe(false);
     expect(database.todoDB.delete(todo.id, user.id)).toBe(true);
     expect(database.todoDB.findById(todo.id, user.id)).toBeNull();
-    expect(database.connection.prepare('SELECT COUNT(*) AS count FROM subtasks').get()).toEqual({
-      count: 0,
-    });
+    expect(database.connection.prepare('SELECT COUNT(*) AS count FROM subtasks').get()).toEqual({ count: 0 });
     expect(database.connection.prepare('SELECT COUNT(*) AS count FROM todo_tags').get()).toEqual({
       count: 0,
     });
+  });
+
+  it('orders subtasks by position and appends after the current maximum', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('todo-owner');
+    const todo = database.todoDB.create(user.id, { title: 'Parent' });
+
+    const first = database.subtaskDB.create(todo.id, { title: 'First' });
+    const second = database.subtaskDB.create(todo.id, { title: 'Second' });
+    database.subtaskDB.delete(first.id, user.id);
+    const third = database.subtaskDB.create(todo.id, { title: 'Third' });
+
+    expect([second, third].map(({ title, position }) => ({ title, position }))).toEqual([
+      { title: 'Second', position: 1 },
+      { title: 'Third', position: 2 },
+    ]);
+    expect(database.subtaskDB.findByTodoId(todo.id)).toEqual([second, third]);
+  });
+
+  it('updates and deletes subtasks only for their owning user', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('todo-owner');
+    const otherUser = database.userDB.create('other-owner');
+    const todo = database.todoDB.create(user.id, { title: 'Parent' });
+    const subtask = database.subtaskDB.create(todo.id, { title: 'Child' });
+
+    expect(database.subtaskDB.update(subtask.id, otherUser.id, { completed: true })).toBeNull();
+    expect(database.subtaskDB.delete(subtask.id, otherUser.id)).toBe(false);
+    expect(database.subtaskDB.update(subtask.id, user.id, { completed: true })).toMatchObject({
+      id: subtask.id,
+      completed: true,
+    });
+    expect(database.subtaskDB.delete(subtask.id, user.id)).toBe(true);
+    expect(database.subtaskDB.findByTodoId(todo.id)).toEqual([]);
   });
 
 });
