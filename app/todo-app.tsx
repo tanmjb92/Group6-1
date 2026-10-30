@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type {
   CreateTagInput,
   Priority,
+  ReminderMinutes,
   RecurrencePattern,
   Subtask,
   Tag,
@@ -11,6 +12,7 @@ import type {
   UpdateTagInput,
   UpdateTodoInput,
 } from '@/lib/db';
+import { REMINDER_LABELS, REMINDER_PRESETS } from '@/lib/reminder-options';
 import { buildTodoEditUpdate, type TodoEditDraft } from '@/lib/todo-input';
 import { ManageTagsModal, TagPill, TagSelector } from './tag-ui';
 import { SUBTASK_TITLE_MAX_LENGTH } from '@/lib/subtask-constants';
@@ -22,6 +24,7 @@ import {
   getSingaporeNow,
 } from '@/lib/timezone';
 import { sectionTodos } from '@/lib/todo-sort';
+import { useNotifications } from '@/lib/hooks/useNotifications';
 
 type TodoAppProps = { userId: number };
 type PriorityFilter = Priority | 'all';
@@ -69,6 +72,59 @@ function RecurrenceBadge({ pattern }: { pattern: RecurrencePattern }) {
     >
       🔄 {pattern}
     </span>
+  );
+}
+
+function ReminderBadge({ minutes }: { minutes: ReminderMinutes }) {
+  return (
+    <span
+      data-testid={`reminder-badge-${minutes}`}
+      className="inline-flex items-center gap-1 rounded-full border border-orange-300 bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-800 dark:border-orange-700 dark:bg-orange-950 dark:text-orange-100"
+    >
+      🔔 {REMINDER_LABELS[minutes]}
+    </span>
+  );
+}
+
+function ReminderSelect({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: ReminderMinutes | null;
+  disabled: boolean;
+  onChange: (value: ReminderMinutes | null) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-sm font-medium">Reminder</span>
+      <select
+        aria-label="Reminder"
+        value={value ?? ''}
+        disabled={disabled}
+        onChange={(event) =>
+          onChange(event.target.value ? (Number(event.target.value) as ReminderMinutes) : null)
+        }
+        className="w-full rounded border border-gray-300 px-3 py-2 disabled:bg-gray-100"
+      >
+        <option value="">None</option>
+        {REMINDER_PRESETS.map((minutes) => (
+          <option key={minutes} value={minutes}>
+            {minutes === 15 || minutes === 30
+              ? `${minutes} minutes before`
+              : minutes === 60
+                ? '1 hour before'
+                : minutes === 120
+                  ? '2 hours before'
+                  : minutes === 1440
+                    ? '1 day before'
+                    : minutes === 2880
+                      ? '2 days before'
+                      : '1 week before'}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -150,6 +206,9 @@ function TodoRow({
             <PriorityBadge priority={todo.priority} />
             {todo.is_recurring && todo.recurrence_pattern && (
               <RecurrenceBadge pattern={todo.recurrence_pattern} />
+            )}
+            {todo.reminder_minutes !== null && (
+              <ReminderBadge minutes={todo.reminder_minutes} />
             )}
           </div>
           <div className="mt-1 flex flex-wrap gap-x-3 text-sm text-gray-600">
@@ -342,6 +401,9 @@ function TodoEditDialog({
   const [dueDate, setDueDate] = useState(
     todo.due_date ? getSingaporeDateTimeLocal(new Date(todo.due_date)) : '',
   );
+  const [reminderMinutes, setReminderMinutes] = useState<ReminderMinutes | null>(
+    todo.reminder_minutes as ReminderMinutes | null,
+  );
   const [priority, setPriority] = useState<Priority>(todo.priority);
   const [isRecurring, setIsRecurring] = useState(todo.is_recurring);
   const [recurrencePattern, setRecurrencePattern] = useState<RecurrencePattern>(
@@ -373,6 +435,7 @@ function TodoEditDialog({
         priority,
         is_recurring: isRecurring,
         recurrence_pattern: recurrencePattern,
+        reminder_minutes: reminderMinutes,
         tag_ids: selectedTagIds,
       });
       if (saved) onCancel();
@@ -425,11 +488,19 @@ function TodoEditDialog({
             value={dueDate}
             onChange={(event) => {
               setDueDate(event.target.value);
-              if (!event.target.value) setIsRecurring(false);
+              if (!event.target.value) {
+                setIsRecurring(false);
+                setReminderMinutes(null);
+              }
             }}
             className="w-full rounded border border-gray-300 px-3 py-2"
           />
         </label>
+        <ReminderSelect
+          value={reminderMinutes}
+          disabled={!dueDate}
+          onChange={setReminderMinutes}
+        />
         <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2 text-sm font-medium">
             <input
@@ -489,6 +560,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
   const pendingTodoIdsRef = useRef(new Set<number>());
   const [title, setTitle] = useState('');
   const [dueDate, setDueDate] = useState('');
+  const [reminderMinutes, setReminderMinutes] = useState<ReminderMinutes | null>(null);
   const [priority, setPriority] = useState<Priority>('medium');
   const [isRecurring, setIsRecurring] = useState(false);
   const [recurrencePattern, setRecurrencePattern] = useState<RecurrencePattern>('daily');
@@ -501,6 +573,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => getSingaporeNow());
+  const { permission, error: notificationError, requestPermission } = useNotifications();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -568,7 +641,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
       priority,
       is_recurring: isRecurring,
       recurrence_pattern: isRecurring ? recurrencePattern : null,
-      reminder_minutes: null,
+      reminder_minutes: reminderMinutes,
       last_notification_sent: null,
       created_at: now.toISOString(),
       updated_at: null,
@@ -577,6 +650,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
     setTodos((current) => [...current, optimistic]);
     setTitle('');
     setDueDate('');
+    setReminderMinutes(null);
     setPriority('medium');
     setIsRecurring(false);
     setRecurrencePattern('daily');
@@ -590,6 +664,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
         body: JSON.stringify({
           title: trimmedTitle,
           due_date: normalizedDueDate,
+          reminder_minutes: reminderMinutes,
           priority,
           is_recurring: isRecurring,
           recurrence_pattern: recurrencePattern,
@@ -603,6 +678,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
       setTodos((current) => current.filter((todo) => todo.id !== optimisticId));
       setTitle(trimmedTitle);
       setDueDate(dueDate);
+      setReminderMinutes(reminderMinutes);
       setPriority(priority);
       setIsRecurring(isRecurring);
       setRecurrencePattern(recurrencePattern);
@@ -884,7 +960,34 @@ export default function TodoApp({ userId }: TodoAppProps) {
   return (
     <div className="mt-8">
       <section className="rounded-xl bg-white p-6 shadow">
-        <h2 className="text-xl font-semibold">Add a todo</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-xl font-semibold">Add a todo</h2>
+          <button
+            type="button"
+            onClick={() => void requestPermission()}
+            disabled={permission === 'granted' || permission === 'unsupported'}
+            className={`rounded px-3 py-2 text-sm font-medium disabled:cursor-not-allowed ${
+              permission === 'granted'
+                ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                : permission === 'denied' || permission === 'unsupported'
+                  ? 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200'
+                  : 'bg-orange-500 text-white hover:bg-orange-600'
+            }`}
+          >
+            {permission === 'granted'
+              ? '🔔 Notifications On'
+              : permission === 'denied'
+                ? '🔔 Notifications Blocked'
+                : permission === 'unsupported'
+                  ? '🔔 Notifications Unsupported'
+                  : '🔔 Enable Notifications'}
+          </button>
+        </div>
+        {notificationError && (
+          <p role="status" className="mt-2 text-sm text-red-700" aria-live="polite">
+            {notificationError}
+          </p>
+        )}
         <button
           type="button"
           onClick={() => setManageTags(true)}
@@ -912,11 +1015,19 @@ export default function TodoApp({ userId }: TodoAppProps) {
               value={dueDate}
               onChange={(event) => {
                 setDueDate(event.target.value);
-                if (!event.target.value) setIsRecurring(false);
+                if (!event.target.value) {
+                  setIsRecurring(false);
+                  setReminderMinutes(null);
+                }
               }}
               className="w-full rounded border border-gray-300 px-3 py-2"
             />
           </label>
+          <ReminderSelect
+            value={reminderMinutes}
+            disabled={!dueDate}
+            onChange={setReminderMinutes}
+          />
           <label className="flex items-center gap-2 text-sm font-medium">
             <input
               type="checkbox"

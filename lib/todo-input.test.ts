@@ -36,6 +36,34 @@ describe('todo input validation', () => {
       success: true,
       data: { due_date: '2026-01-15T04:31:00.000Z' },
     });
+
+  });
+
+  it('accepts only supported reminder presets when the effective todo has a due date', () => {
+    const presets = [15, 30, 60, 120, 1440, 2880, 10080] as const;
+    for (const reminder_minutes of presets) {
+      expect(
+        validateCreateTodo(
+          {
+            title: 'Reminded task',
+            due_date: '2026-01-16T04:30:00.000Z',
+            reminder_minutes,
+          },
+          now,
+        ),
+      ).toMatchObject({ success: true, data: { reminder_minutes } });
+    }
+
+    expect(validateCreateTodo({ title: 'No due date', reminder_minutes: 15 }, now)).toMatchObject({
+      success: false,
+      error: 'Reminders require a due date',
+    });
+    expect(
+      validateCreateTodo(
+        { title: 'Invalid reminder', due_date: '2026-01-16T04:30:00.000Z', reminder_minutes: 16 },
+        now,
+      ),
+    ).toMatchObject({ success: false, error: 'Invalid reminder timing' });
   });
 
   it('rejects invalid and too-soon due dates', () => {
@@ -178,10 +206,12 @@ describe('todo input validation', () => {
       success: true,
       data: { is_recurring: true, recurrence_pattern: 'weekly' },
     });
+
     expect(validateUpdateTodo({ is_recurring: true }, now, todo)).toMatchObject({
       success: false,
       error: 'Invalid recurrence pattern',
     });
+
     expect(
       validateUpdateTodo(
         { due_date: null },
@@ -202,6 +232,83 @@ describe('todo input validation', () => {
       success: true,
       data: { due_date: null, is_recurring: false, recurrence_pattern: null },
     });
+  });
+
+  it('validates reminders against the effective due date and reminder timing on update', () => {
+    const todo: Todo = {
+      id: 1,
+      user_id: 1,
+      title: 'Task',
+      completed: false,
+      due_date: '2026-01-16T04:30:00.000Z',
+      priority: 'medium',
+      is_recurring: false,
+      recurrence_pattern: null,
+      reminder_minutes: 60,
+      last_notification_sent: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: null,
+    };
+
+    expect(validateUpdateTodo({ title: 'Renamed' }, now, todo)).toMatchObject({ success: true });
+    expect(validateUpdateTodo({ due_date: null }, now, todo)).toMatchObject({
+      success: false,
+      error: 'Reminders require a due date',
+    });
+    expect(validateUpdateTodo({ due_date: null, reminder_minutes: null }, now, todo)).toEqual({
+      success: true,
+      data: { due_date: null, reminder_minutes: null },
+    });
+    expect(validateUpdateTodo({ reminder_minutes: 16 }, now, todo)).toMatchObject({
+      success: false,
+      error: 'Invalid reminder timing',
+    });
+  });
+
+  it('includes reminder changes in a todo edit and clears them with the due date', () => {
+    const todo: Todo = {
+      id: 1,
+      user_id: 1,
+      title: 'Task',
+      completed: false,
+      due_date: '2026-01-16T04:30:00.000Z',
+      priority: 'medium',
+      is_recurring: false,
+      recurrence_pattern: null,
+      reminder_minutes: 60,
+      last_notification_sent: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: null,
+    };
+
+    expect(
+      buildTodoEditUpdate(
+        todo,
+        {
+          title: 'Task',
+          due_date: '2026-01-16T12:30',
+          priority: 'medium',
+          is_recurring: false,
+          recurrence_pattern: 'daily',
+          reminder_minutes: 120,
+        },
+        now,
+      ),
+    ).toMatchObject({ success: true, data: { reminder_minutes: 120 } });
+    expect(
+      buildTodoEditUpdate(
+        todo,
+        {
+          title: 'Task',
+          due_date: '',
+          priority: 'medium',
+          is_recurring: false,
+          recurrence_pattern: 'daily',
+          reminder_minutes: null,
+        },
+        now,
+      ),
+    ).toMatchObject({ success: true, data: { due_date: null, reminder_minutes: null } });
   });
 
   it('allows editing other fields while keeping an existing overdue date unchanged', () => {

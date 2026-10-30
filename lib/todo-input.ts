@@ -2,10 +2,12 @@ import { z } from 'zod';
 import type {
   CreateTodoInput,
   Priority,
+  ReminderMinutes,
   RecurrencePattern,
   Todo,
   UpdateTodoInput,
 } from './db';
+import { REMINDER_PRESETS } from './reminder-options';
 import {
   fromSingaporeDateTimeLocal,
   getSingaporeDateTimeLocal,
@@ -18,6 +20,7 @@ const createSchema = z
   .object({
     title: z.string(),
     due_date: z.string().nullable().optional(),
+    reminder_minutes: z.number().int().nullable().optional(),
     priority: prioritySchema.nullable().optional(),
     is_recurring: z.boolean().optional(),
     recurrence_pattern: recurrencePatternSchema.nullable().optional(),
@@ -28,6 +31,7 @@ const updateSchema = z
   .object({
     title: z.string().optional(),
     due_date: z.string().nullable().optional(),
+    reminder_minutes: z.number().int().nullable().optional(),
     priority: prioritySchema.optional(),
     completed: z.boolean().optional(),
     is_recurring: z.boolean().optional(),
@@ -43,10 +47,15 @@ export type TodoEditDraft = {
   priority: Priority;
   is_recurring: boolean;
   recurrence_pattern: RecurrencePattern;
+  reminder_minutes?: ReminderMinutes | null;
   tag_ids?: number[];
 };
 const PRIORITY_ERROR = "Must be 'high', 'medium', or 'low'.";
 const RECURRENCE_PATTERNS: RecurrencePattern[] = ['daily', 'weekly', 'monthly', 'yearly'];
+
+function isReminderMinutes(value: number): value is ReminderMinutes {
+  return REMINDER_PRESETS.some((preset) => preset === value);
+}
 
 function hasInvalidRecurrencePattern(value: unknown): boolean {
   return (
@@ -77,6 +86,7 @@ function normalizeDueDate(value: string, now: Date): Validation<string> {
       error: 'Due date must be at least 1 minute in the future',
     };
   }
+
   return { success: true, data: instant.toISOString() };
 }
 
@@ -111,11 +121,18 @@ export function validateCreateTodo(input: unknown, now: Date): Validation<Create
   if (!dueDate.success) return dueDate;
   const isRecurring = result.data.is_recurring ?? false;
   const recurrencePattern = result.data.recurrence_pattern ?? null;
+  const reminderMinutes = result.data.reminder_minutes ?? null;
   if (isRecurring && !dueDate.data) {
     return { success: false, error: 'Recurring todos require a due date' };
   }
   if (isRecurring && !recurrencePattern) {
     return { success: false, error: 'Invalid recurrence pattern' };
+  }
+  if (result.data.reminder_minutes != null && !isReminderMinutes(result.data.reminder_minutes)) {
+    return { success: false, error: 'Invalid reminder timing' };
+  }
+  if (reminderMinutes !== null && !dueDate.data) {
+    return { success: false, error: 'Reminders require a due date' };
   }
 
   return {
@@ -126,6 +143,9 @@ export function validateCreateTodo(input: unknown, now: Date): Validation<Create
       priority: (result.data.priority ?? 'medium') as Priority,
       is_recurring: isRecurring,
       recurrence_pattern: isRecurring ? recurrencePattern : null,
+      ...(result.data.reminder_minutes !== undefined
+        ? { reminder_minutes: reminderMinutes as ReminderMinutes | null }
+        : {}),
       ...(result.data.tag_ids !== undefined ? { tag_ids: [...new Set(result.data.tag_ids)] } : {}),
     },
   };
@@ -179,6 +199,15 @@ export function validateUpdateTodo(
   if (result.data.recurrence_pattern !== undefined) {
     data.recurrence_pattern = result.data.recurrence_pattern;
   }
+  if (result.data.reminder_minutes !== undefined) {
+    if (
+      result.data.reminder_minutes !== null &&
+      !isReminderMinutes(result.data.reminder_minutes)
+    ) {
+      return { success: false, error: 'Invalid reminder timing' };
+    }
+    data.reminder_minutes = result.data.reminder_minutes as ReminderMinutes | null;
+  }
   if (result.data.tag_ids !== undefined) data.tag_ids = [...new Set(result.data.tag_ids)];
 
   const isRecurring = data.is_recurring ?? current?.is_recurring ?? false;
@@ -192,6 +221,13 @@ export function validateUpdateTodo(
   }
   if (isRecurring && !recurrencePattern) {
     return { success: false, error: 'Invalid recurrence pattern' };
+  }
+  const reminderMinutes =
+    data.reminder_minutes !== undefined
+      ? data.reminder_minutes
+      : (current?.reminder_minutes ?? null);
+  if (reminderMinutes !== null && !dueDate) {
+    return { success: false, error: 'Reminders require a due date' };
   }
   if (data.is_recurring === false) data.recurrence_pattern = null;
   return { success: true, data };
@@ -218,6 +254,9 @@ export function buildTodoEditUpdate(
     recurrence_pattern: draft.is_recurring ? draft.recurrence_pattern : null,
     ...(draft.tag_ids !== undefined ? { tag_ids: [...new Set(draft.tag_ids)] } : {}),
   };
+  const reminderMinutes =
+    draft.reminder_minutes === undefined ? todo.reminder_minutes : draft.reminder_minutes;
+  if (reminderMinutes !== todo.reminder_minutes) data.reminder_minutes = reminderMinutes;
   if (draft.due_date !== currentDueDate) {
     if (!draft.due_date) {
       data.due_date = null;

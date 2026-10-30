@@ -2,6 +2,10 @@ import Database from 'better-sqlite3';
 import { createChallengeStore } from './auth/challenge-store';
 import { getSingaporeNow } from './timezone';
 import { generateCalendarGrid } from './calendar';
+import type { ReminderMinutes } from './reminder-options';
+
+export { REMINDER_LABELS, REMINDER_PRESETS } from './reminder-options';
+export type { ReminderMinutes } from './reminder-options';
 
 export interface Holiday {
   id: number;
@@ -12,7 +16,6 @@ export interface Holiday {
 export type Priority = 'high' | 'medium' | 'low';
 export const PRIORITY_VALUES: Priority[] = ['high', 'medium', 'low'];
 export type RecurrencePattern = 'daily' | 'weekly' | 'monthly' | 'yearly';
-
 export interface Todo {
   id: number;
   user_id: number;
@@ -22,7 +25,7 @@ export interface Todo {
   priority: Priority;
   is_recurring: boolean;
   recurrence_pattern: RecurrencePattern | null;
-  reminder_minutes: number | null;
+  reminder_minutes: ReminderMinutes | null;
   last_notification_sent: string | null;
   created_at: string;
   updated_at: string | null;
@@ -72,7 +75,7 @@ export interface CreateTodoInput {
   priority?: Priority;
   is_recurring?: boolean;
   recurrence_pattern?: RecurrencePattern | null;
-  reminder_minutes?: number | null;
+  reminder_minutes?: ReminderMinutes | null;
   tag_ids?: number[];
 }
 
@@ -83,6 +86,7 @@ export interface UpdateTodoInput {
   completed?: boolean;
   is_recurring?: boolean;
   recurrence_pattern?: RecurrencePattern | null;
+  reminder_minutes?: ReminderMinutes | null;
   tag_ids?: number[];
 }
 
@@ -226,6 +230,16 @@ function createAuthDatabase(connection: Database.Database) {
   const todoById = connection.prepare('SELECT * FROM todos WHERE id = ? AND user_id = ?');
   const todosByUser = connection.prepare(
     'SELECT * FROM todos WHERE user_id = ? ORDER BY created_at DESC, id DESC',
+  );
+  const dueRemindersByUser = connection.prepare(
+    `SELECT * FROM todos
+     WHERE user_id = ?
+       AND completed = 0
+       AND due_date IS NOT NULL
+       AND reminder_minutes IS NOT NULL
+       AND last_notification_sent IS NULL
+       AND julianday(due_date) - (reminder_minutes / 1440.0) <= julianday(?)
+     ORDER BY due_date ASC, id ASC`,
   );
   const tagsByUser = connection.prepare(
     'SELECT id, user_id, name, color, created_at FROM tags WHERE user_id = ? ORDER BY name COLLATE NOCASE, id',
@@ -475,6 +489,28 @@ function createAuthDatabase(connection: Database.Database) {
     findById(id: number, userId: number): Todo | null {
       return hydrateTodo(todoById.get(id, userId) as Todo | undefined, userId);
     },
+    findDueReminders(userId: number, now: string): Todo[] {
+      return (dueRemindersByUser.all(userId, now) as Todo[])
+        .map((row) => hydrateTodo(row, userId))
+        .filter((todo): todo is Todo => todo !== null);
+    },
+    acknowledgeReminder(
+      id: number,
+      userId: number,
+      dueDate: string,
+      reminderMinutes: ReminderMinutes,
+      sentAt: string,
+    ): boolean {
+      return (
+        connection
+          .prepare(
+            `UPDATE todos SET last_notification_sent = ?
+             WHERE id = ? AND user_id = ? AND due_date = ? AND reminder_minutes = ?
+               AND completed = 0 AND last_notification_sent IS NULL`,
+          )
+          .run(sentAt, id, userId, dueDate, reminderMinutes).changes === 1
+      );
+    },
     create(userId: number, input: CreateTodoInput): Todo {
       return connection.transaction(() => {
         const result = connection
@@ -512,6 +548,10 @@ function createAuthDatabase(connection: Database.Database) {
         assignments.push('due_date = ?');
         values.push(input.due_date);
       }
+      if (input.reminder_minutes !== undefined) {
+        assignments.push('reminder_minutes = ?');
+        values.push(input.reminder_minutes);
+      }
       if (input.priority !== undefined) {
         assignments.push('priority = ?');
         values.push(input.priority);
@@ -532,7 +572,14 @@ function createAuthDatabase(connection: Database.Database) {
         return this.findById(id, userId);
       }
       return connection.transaction(() => {
+        const existing = this.findById(id, userId);
+        if (!existing) return null;
+        const reminderChanged =
+          (input.due_date !== undefined && input.due_date !== existing.due_date) ||
+          (input.reminder_minutes !== undefined &&
+            input.reminder_minutes !== existing.reminder_minutes);
         if (assignments.length > 0) {
+          if (reminderChanged) assignments.push('last_notification_sent = NULL');
           assignments.push('updated_at = ?');
           values.push(getSingaporeNow().toISOString(), id, userId);
           connection

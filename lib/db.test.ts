@@ -159,6 +159,7 @@ describe('todo database', () => {
       recurrence_pattern: 'monthly',
       reminder_minutes: 60,
     });
+
     const calculateNext = (dueDate: string, pattern: 'daily' | 'weekly' | 'monthly' | 'yearly') =>
       pattern === 'monthly' ? '2026-03-01T01:00:00.000Z' : dueDate;
 
@@ -216,6 +217,124 @@ describe('todo database', () => {
 
     expect(result).toMatchObject({ todo: { completed: true }, nextInstance: null });
     expect(database.todoDB.findAllByUser(user.id)).toHaveLength(1);
+  });
+
+  it('finds due reminders at inclusive preset boundaries across Singapore midnight', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('reminder-owner');
+    const now = '2026-03-08T23:59:00.000Z';
+    const presets = [15, 30, 60, 120, 1440, 2880, 10080] as const;
+    const expected = presets.map((minutes) =>
+      database!.todoDB.create(user.id, {
+        title: `Reminder ${minutes}`,
+        due_date: new Date(Date.parse(now) + minutes * 60_000).toISOString(),
+        reminder_minutes: minutes,
+      }),
+    );
+    const outside = database.todoDB.create(user.id, {
+      title: 'Outside boundary',
+      due_date: new Date(Date.parse(now) + 60 * 60_000 + 1).toISOString(),
+      reminder_minutes: 60,
+    });
+
+    expect(database.todoDB.findDueReminders(user.id, now).map((todo) => todo.id)).toEqual(
+      expected.map((todo) => todo.id),
+    );
+    expect(
+      database.todoDB
+        .findDueReminders(user.id, new Date(Date.parse(now) + 1).toISOString())
+        .map((todo) => todo.id)
+        .sort((left, right) => left - right),
+    ).toEqual([...expected.map((todo) => todo.id), outside.id].sort((left, right) => left - right));
+    expect(expected[4].due_date).toBe('2026-03-09T23:59:00.000Z');
+    expect(expected[6].due_date).toBe('2026-03-15T23:59:00.000Z');
+  });
+
+  it('includes arbitrarily overdue reminders and excludes completed, sent, unconfigured, and foreign todos', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('reminder-owner');
+    const other = database.userDB.create('other-reminder-owner');
+    const dueDate = '2026-03-09T00:00:00.000Z';
+    const overdue = database.todoDB.create(user.id, {
+      title: 'Overdue reminder',
+      due_date: dueDate,
+      reminder_minutes: 15,
+    });
+    const completed = database.todoDB.create(user.id, {
+      title: 'Completed reminder',
+      due_date: dueDate,
+      reminder_minutes: 15,
+    });
+    database.todoDB.update(completed.id, user.id, { completed: true });
+    const sent = database.todoDB.create(user.id, {
+      title: 'Sent reminder',
+      due_date: dueDate,
+      reminder_minutes: 15,
+    });
+    database.todoDB.acknowledgeReminder(
+      sent.id,
+      user.id,
+      dueDate,
+      15,
+      '2026-03-08T23:59:00.000Z',
+    );
+    database.todoDB.create(user.id, { title: 'No date', reminder_minutes: 15 });
+    database.todoDB.create(user.id, { title: 'No reminder', due_date: dueDate });
+    database.todoDB.create(other.id, {
+      title: 'Foreign reminder',
+      due_date: dueDate,
+      reminder_minutes: 15,
+    });
+
+    expect(database.todoDB.findDueReminders(user.id, '2026-03-15T00:00:00.000Z')).toEqual([
+      expect.objectContaining({ id: overdue.id }),
+    ]);
+  });
+
+  it('resets sent state only when due date or reminder timing changes and rejects stale or foreign acknowledgements', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('reminder-owner');
+    const other = database.userDB.create('other-reminder-owner');
+    const originalDueDate = '2026-03-10T00:00:00.000Z';
+    const todo = database.todoDB.create(user.id, {
+      title: 'Reminder reset',
+      due_date: originalDueDate,
+      reminder_minutes: 60,
+    });
+    const firstSentAt = '2026-03-09T00:00:00.000Z';
+
+    expect(
+      database.todoDB.acknowledgeReminder(todo.id, other.id, originalDueDate, 60, firstSentAt),
+    ).toBe(false);
+    expect(
+      database.todoDB.acknowledgeReminder(todo.id, user.id, originalDueDate, 30, firstSentAt),
+    ).toBe(false);
+    expect(
+      database.todoDB.acknowledgeReminder(todo.id, user.id, originalDueDate, 60, firstSentAt),
+    ).toBe(true);
+    expect(
+      database.todoDB.acknowledgeReminder(todo.id, user.id, originalDueDate, 60, firstSentAt),
+    ).toBe(false);
+
+    database.todoDB.update(todo.id, user.id, {
+      due_date: originalDueDate,
+      reminder_minutes: 60,
+    });
+    expect(database.todoDB.findById(todo.id, user.id)?.last_notification_sent).toBe(firstSentAt);
+    database.todoDB.update(todo.id, user.id, { title: 'Unrelated edit' });
+    expect(database.todoDB.findById(todo.id, user.id)?.last_notification_sent).toBe(firstSentAt);
+
+    const nextDueDate = '2026-03-11T00:00:00.000Z';
+    database.todoDB.update(todo.id, user.id, { due_date: nextDueDate });
+    expect(database.todoDB.findById(todo.id, user.id)?.last_notification_sent).toBeNull();
+    expect(
+      database.todoDB.acknowledgeReminder(todo.id, user.id, originalDueDate, 60, firstSentAt),
+    ).toBe(false);
+    expect(
+      database.todoDB.acknowledgeReminder(todo.id, user.id, nextDueDate, 60, firstSentAt),
+    ).toBe(true);
+    database.todoDB.update(todo.id, user.id, { reminder_minutes: 120 });
+    expect(database.todoDB.findById(todo.id, user.id)?.last_notification_sent).toBeNull();
   });
 
   it('attaches tags atomically, hydrates them, and keeps ownership isolated', () => {

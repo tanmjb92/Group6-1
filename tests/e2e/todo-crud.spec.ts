@@ -68,7 +68,7 @@ test('shows color-coded priority badges and filters todos by priority', async ({
     ['Read later', 'low', 'Low', /bg-blue-100/],
   ] as const) {
     await page.getByLabel('Title').fill(title);
-    await page.locator('form').first().getByRole('combobox').selectOption(priority);
+    await page.getByLabel('Priority').first().selectOption(priority);
     await page.getByRole('button', { name: 'Add', exact: true }).click();
     const badge = page.getByTestId(`priority-badge-${priority}`).last();
     await expect(badge).toHaveText(label);

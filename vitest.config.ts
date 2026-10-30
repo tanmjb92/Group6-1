@@ -5,7 +5,14 @@ export default defineConfig({
     environment: 'node',
     include: ['lib/**/*.test.ts'],
     coverage: {
-      include: ['lib/auth.ts', 'lib/auth/**/*.ts', 'lib/db.ts', 'lib/tag-input.ts'],
+      include: [
+        'lib/auth.ts',
+        'lib/auth/**/*.ts',
+        'lib/db.ts',
+        'lib/tag-input.ts',
+        'lib/todo-input.ts',
+        'lib/reminder-options.ts',
+      ],
       exclude: ['**/*.test.ts'],
       thresholds: {
         branches: 80,

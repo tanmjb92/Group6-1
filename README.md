@@ -14,6 +14,23 @@ Cells show three todos and a count for additional items. Undated todos and futur
 recurring occurrences that do not yet exist are not displayed. List-view filters
 do not apply to the calendar.
 
+## Reminders and browser notifications (Feature 04)
+
+Set a due date and choose one of the seven reminder offsets (15 minutes through
+one week) when creating or editing a todo. Select **None** to turn a reminder
+off. Use **Enable Notifications** to opt in; the browser permission prompt is
+shown only after clicking. While permission is granted and the app is open, it
+checks for due reminders immediately and about every 30 seconds. Overdue
+unnotified reminders are delivered on the next check, including after a long
+absence. Editing the due date or reminder timing re-arms that reminder; changing
+other todo fields does not.
+
+Delivery is best-effort, not exactly-once: same-tag notifications usually
+coalesce across tabs, but a crash, simultaneous tabs, or a failed acknowledgement
+can still cause a duplicate or delay. Browser background-tab throttling may make
+checks take longer than 30 seconds. Notifications do not work while the app is
+closed; this feature does not use a service worker or push service.
+
 ## Tags (Feature 06)
 
 Use **Manage Tags** above the todo form to create, edit, or delete your own
