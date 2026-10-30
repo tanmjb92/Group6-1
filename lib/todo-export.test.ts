@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import type { Todo } from './db';
-import { formatExportDate, toCsv, toExportItem, todoImportSchema } from './todo-export';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import type { ReminderMinutes, Todo } from './db';
+import { REMINDER_PRESETS } from './reminder-options';
+import { formatExportDate, toCsv, toExportItem, todoImportSchema, type TodoImportData } from './todo-export';
 
 const todo: Todo = {
   id: 7,
@@ -29,6 +30,23 @@ const todo: Todo = {
 };
 
 describe('todo export helpers', () => {
+  it('preserves the shared reminder preset type when validating imports', () => {
+    expectTypeOf<TodoImportData['todos'][number]['reminder_minutes']>()
+      .toEqualTypeOf<ReminderMinutes | null>();
+    for (const reminderMinutes of [...REMINDER_PRESETS, null]) {
+      const parsed = todoImportSchema.parse({
+        version: 1,
+        exported_at: '2026-10-30T00:00:00.000Z',
+        todos: [toExportItem({
+          ...todo,
+          due_date: '2026-11-02T03:00:00.000Z',
+          reminder_minutes: reminderMinutes,
+        })],
+      });
+      expect(parsed.todos[0].reminder_minutes).toBe(reminderMinutes);
+    }
+  });
+
   it('exports relations without database IDs or internal fields', () => {
     expect(toExportItem(todo)).toEqual({
       title: todo.title,

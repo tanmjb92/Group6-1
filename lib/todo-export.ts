@@ -1,8 +1,7 @@
 import { z } from 'zod';
 import type { Todo, TodoExportItem } from './db';
+import { REMINDER_PRESETS } from './reminder-options';
 import { formatSingaporeDate, parseDueDate } from './timezone';
-
-const SUPPORTED_REMINDER_MINUTES = [15, 30, 60, 120, 1440, 2880, 10080];
 
 export const todoImportSchema = z.object({
   version: z.literal(1),
@@ -15,11 +14,7 @@ export const todoImportSchema = z.object({
       priority: z.enum(['high', 'medium', 'low']),
       is_recurring: z.boolean(),
       recurrence_pattern: z.enum(['daily', 'weekly', 'monthly', 'yearly']).nullable(),
-      reminder_minutes: z
-        .number()
-        .int()
-        .refine((value) => SUPPORTED_REMINDER_MINUTES.includes(value))
-        .nullable(),
+      reminder_minutes: z.literal(REMINDER_PRESETS).nullable(),
       created_at: z.string().refine((value) => parseDueDate(value) !== null),
       subtasks: z.array(
         z.object({
