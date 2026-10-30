@@ -79,15 +79,15 @@ Organize todos by importance with three priority levels, each with distinct colo
 
 ### How to Use
 - Select priority when creating a todo using the dropdown menu
-- Todos are automatically sorted with high priority tasks appearing first
+- Overdue and Pending todos are automatically sorted High → Medium → Low, then by due date
 - Change priority by editing the todo
-- Filter todos by priority using the priority filter dropdown
+- Use the **Filter by priority** dropdown to show High, Medium, or Low todos; select **All Priorities** to clear the filter
 
 ### Visual Indicators
 - Each priority level has unique color-coded badges
-- Badge appears next to todo title in all views
-- Colors adapt automatically in dark mode
-- Overdue section maintains priority badges
+- Badge appears beside each todo title in Overdue, Pending, and Completed sections
+- Badges use high-contrast color combinations in light and dark color schemes
+- Changing priority while filtered immediately removes todos that no longer match
 
 ---
 

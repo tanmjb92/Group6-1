@@ -42,6 +42,21 @@ describe('todo input validation', () => {
     });
   });
 
+  it('defaults null creation priority to medium and reports invalid values precisely', () => {
+    expect(validateCreateTodo({ title: 'Task', priority: null }, now)).toEqual({
+      success: true,
+      data: { title: 'Task', due_date: null, priority: 'medium' },
+    });
+    expect(validateCreateTodo({ title: 'Task', priority: 'urgent' }, now)).toEqual({
+      success: false,
+      error: "Invalid priority: urgent. Must be 'high', 'medium', or 'low'.",
+    });
+    expect(validateCreateTodo({ title: 'Task', priority: 'HIGH' }, now)).toMatchObject({
+      success: false,
+      error: "Invalid priority: HIGH. Must be 'high', 'medium', or 'low'.",
+    });
+  });
+
   it('validates updates without resetting fields omitted from the payload', () => {
     expect(validateUpdateTodo({ completed: true }, now)).toEqual({
       success: true,
@@ -63,6 +78,17 @@ describe('todo input validation', () => {
       data: { due_date: null },
     });
     expect(validateCreateTodo({ title: 'Task', priority: 'urgent' }, now).success).toBe(false);
+  });
+
+  it('rejects null and invalid update priorities with a descriptive error', () => {
+    expect(validateUpdateTodo({ priority: null }, now)).toEqual({
+      success: false,
+      error: "Invalid priority: null. Must be 'high', 'medium', or 'low'.",
+    });
+    expect(validateUpdateTodo({ priority: 'urgent' }, now)).toEqual({
+      success: false,
+      error: "Invalid priority: urgent. Must be 'high', 'medium', or 'low'.",
+    });
   });
 
   it('allows editing other fields while keeping an existing overdue date unchanged', () => {

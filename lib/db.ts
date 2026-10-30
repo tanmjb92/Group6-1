@@ -3,6 +3,7 @@ import { createChallengeStore } from './auth/challenge-store';
 import { getSingaporeNow } from './timezone';
 
 export type Priority = 'high' | 'medium' | 'low';
+export const PRIORITY_VALUES: Priority[] = ['high', 'medium', 'low'];
 export type RecurrencePattern = 'daily' | 'weekly' | 'monthly' | 'yearly';
 
 export interface Todo {

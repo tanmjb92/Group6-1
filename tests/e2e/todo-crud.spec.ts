@@ -41,7 +41,7 @@ test('creates, completes, edits, and deletes todos', async ({ page }) => {
   await page.getByLabel('Title').fill('Call dentist');
   await page.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(page.getByText('Call dentist')).toBeVisible();
-  await expect(page.getByText('Medium priority')).toBeVisible();
+  await expect(page.getByTestId('priority-badge-medium')).toHaveText('Medium');
   await expect(page.getByRole('heading', { name: 'Pending (1)' })).toBeVisible();
 
   await page.getByRole('checkbox', { name: 'Mark "Call dentist" as complete' }).click();
@@ -51,11 +51,112 @@ test('creates, completes, edits, and deletes todos', async ({ page }) => {
   await page.getByRole('dialog').getByLabel('Priority').selectOption('high');
   await page.getByRole('button', { name: 'Update' }).click();
   await expect(page.getByText('Call the dentist')).toBeVisible();
-  await expect(page.getByText('High priority')).toBeVisible();
+  await expect(page.getByTestId('priority-badge-high')).toHaveText('High');
 
   await page.getByRole('button', { name: 'Delete' }).click();
   await expect(page.getByText('Call the dentist')).not.toBeVisible();
   await expect(page.getByRole('heading', { name: 'Completed (0)' })).toBeVisible();
+  await cdp.detach();
+});
+
+test('shows color-coded priority badges and filters todos by priority', async ({ page }) => {
+  const cdp = await register(page, `todo-priority-${Date.now()}`);
+
+  for (const [title, priority, label, background] of [
+    ['Urgent proposal', 'high', 'High', /bg-red-100/],
+    ['Routine email', 'medium', 'Medium', /bg-yellow-100/],
+    ['Read later', 'low', 'Low', /bg-blue-100/],
+  ] as const) {
+    await page.getByLabel('Title').fill(title);
+    await page.locator('form').first().getByRole('combobox').selectOption(priority);
+    await page.getByRole('button', { name: 'Add', exact: true }).click();
+    const badge = page.getByTestId(`priority-badge-${priority}`).last();
+    await expect(badge).toHaveText(label);
+    await expect(badge).toHaveClass(background);
+  }
+  async function expectPriorityBadgesMeetContrast() {
+    const ratios = await page.locator('[data-testid^="priority-badge-"]').evaluateAll((badges) => {
+      const context = document.createElement('canvas').getContext('2d');
+      if (!context) throw new Error('Canvas 2D context is unavailable');
+      const rgb = (color: string) => {
+        context.clearRect(0, 0, 1, 1);
+        context.fillStyle = color;
+        context.fillRect(0, 0, 1, 1);
+        return Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3);
+      };
+      const luminance = (color: string) => {
+        const [red, green, blue] = rgb(color).map((channel) => {
+          const value = Number(channel) / 255;
+          return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+      };
+      return badges.map((badge) => {
+        const style = getComputedStyle(badge);
+        const foreground = luminance(style.color);
+        const background = luminance(style.backgroundColor);
+        return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+      });
+    });
+    expect(ratios.every((ratio) => ratio >= 4.5)).toBe(true);
+  }
+  await expectPriorityBadgesMeetContrast();
+
+  const filter = page.getByLabel('Filter by priority');
+  await filter.selectOption('high');
+  await expect(page.getByText('Urgent proposal')).toBeVisible();
+  await expect(page.getByText('Routine email')).not.toBeVisible();
+  await expect(page.getByText('Read later')).not.toBeVisible();
+  await filter.selectOption('all');
+  await expect(page.getByText('Urgent proposal')).toBeVisible();
+  await expect(page.getByText('Routine email')).toBeVisible();
+  await expect(page.getByText('Read later')).toBeVisible();
+
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(page.getByTestId('priority-badge-high').last()).toHaveClass(/dark:bg-red-950/);
+  await expectPriorityBadgesMeetContrast();
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.getByRole('checkbox', { name: 'Mark "Urgent proposal" as complete' }).click();
+  await expect(page.getByRole('heading', { name: 'Completed (1)' })).toBeVisible();
+  await filter.selectOption('high');
+  await page.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('dialog').getByLabel('Priority').selectOption('low');
+  await page.getByRole('button', { name: 'Update' }).click();
+  await expect(page.getByText('Urgent proposal')).not.toBeVisible();
+  await filter.selectOption('all');
+  await expect(page.getByTestId('priority-badge-low')).toHaveCount(2);
+  await cdp.detach();
+});
+
+test('validates priority on create and update API calls', async ({ page }) => {
+  const cdp = await register(page, `todo-priority-api-${Date.now()}`);
+  const invalidCreate = await page.request.post('/api/todos', {
+    data: { title: 'Invalid priority', priority: 'urgent' },
+  });
+  expect(invalidCreate.status()).toBe(400);
+  expect(await invalidCreate.json()).toMatchObject({
+    error: "Invalid priority: urgent. Must be 'high', 'medium', or 'low'.",
+  });
+  expect(await (await page.request.get('/api/todos')).json()).toEqual([]);
+
+  const created = await page.request.post('/api/todos', {
+    data: { title: 'Medium priority task', priority: null },
+  });
+  expect(created.status()).toBe(201);
+  const todo = (await created.json()) as { id: number; priority: string };
+  expect(todo.priority).toBe('medium');
+
+  const invalidUpdate = await page.request.put(`/api/todos/${todo.id}`, {
+    data: { priority: null },
+  });
+  expect(invalidUpdate.status()).toBe(400);
+  expect(await invalidUpdate.json()).toMatchObject({
+    error: "Invalid priority: null. Must be 'high', 'medium', or 'low'.",
+  });
+  const filtered = await page.request.get('/api/todos?priority=medium');
+  expect(filtered.status()).toBe(200);
+  expect(await filtered.json()).toHaveLength(1);
+  expect((await page.request.get('/api/todos?priority=urgent')).status()).toBe(400);
   await cdp.detach();
 });
 

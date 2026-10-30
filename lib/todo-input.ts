@@ -11,7 +11,7 @@ const createSchema = z
   .object({
     title: z.string(),
     due_date: z.string().nullable().optional(),
-    priority: prioritySchema.optional(),
+    priority: prioritySchema.nullable().optional(),
   })
   .strict();
 const updateSchema = z
@@ -25,6 +25,18 @@ const updateSchema = z
 
 type Validation<T> = { success: true; data: T } | { success: false; error: string };
 export type TodoEditDraft = { title: string; due_date: string; priority: Priority };
+const PRIORITY_ERROR = "Must be 'high', 'medium', or 'low'.";
+
+function isPriority(value: unknown): value is Priority {
+  return value === 'high' || value === 'medium' || value === 'low';
+}
+
+function invalidPriority(value: unknown): Validation<never> {
+  return {
+    success: false,
+    error: `Invalid priority: ${String(value)}. ${PRIORITY_ERROR}`,
+  };
+}
 
 function normalizeDueDate(value: string, now: Date): Validation<string> {
   const singaporeLocal = fromSingaporeDateTimeLocal(value);
@@ -40,6 +52,16 @@ function normalizeDueDate(value: string, now: Date): Validation<string> {
 }
 
 export function validateCreateTodo(input: unknown, now: Date): Validation<CreateTodoInput> {
+  if (
+    typeof input === 'object' &&
+    input !== null &&
+    'priority' in input &&
+    input.priority != null &&
+    !isPriority(input.priority)
+  ) {
+    return invalidPriority(input.priority);
+  }
+
   const result = createSchema.safeParse(input);
   if (!result.success) return { success: false, error: 'Invalid todo data' };
 
@@ -62,6 +84,15 @@ export function validateCreateTodo(input: unknown, now: Date): Validation<Create
 }
 
 export function validateUpdateTodo(input: unknown, now: Date): Validation<UpdateTodoInput> {
+  if (
+    typeof input === 'object' &&
+    input !== null &&
+    'priority' in input &&
+    !isPriority(input.priority)
+  ) {
+    return invalidPriority(input.priority);
+  }
+
   const result = updateSchema.safeParse(input);
   if (!result.success) return { success: false, error: 'Invalid todo data' };
   if (Object.keys(result.data).length === 0) {

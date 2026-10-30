@@ -12,6 +12,7 @@ import {
 import { sectionTodos } from '@/lib/todo-sort';
 
 type TodoAppProps = { userId: number };
+type PriorityFilter = Priority | 'all';
 let nextOptimisticTodoId = 0;
 
 function localDateMinimum(): string {
@@ -26,6 +27,25 @@ async function errorMessage(response: Response): Promise<string> {
     // The response may not contain JSON.
   }
   return `Request failed (${response.status})`;
+}
+
+const PRIORITY_BADGE_STYLES: Record<Priority, string> = {
+  high: 'border-red-300 bg-red-100 text-red-800 dark:border-red-700 dark:bg-red-950 dark:text-red-100',
+  medium:
+    'border-yellow-300 bg-yellow-100 text-yellow-900 dark:border-yellow-700 dark:bg-yellow-950 dark:text-yellow-100',
+  low: 'border-blue-300 bg-blue-100 text-blue-800 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-100',
+};
+
+function PriorityBadge({ priority }: { priority: Priority }) {
+  const label = priority[0].toUpperCase() + priority.slice(1);
+  return (
+    <span
+      data-testid={`priority-badge-${priority}`}
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${PRIORITY_BADGE_STYLES[priority]}`}
+    >
+      {label}
+    </span>
+  );
 }
 
 function TodoRow({
@@ -50,11 +70,13 @@ function TodoRow({
           aria-label={`Mark "${todo.title}" as ${todo.completed ? 'incomplete' : 'complete'}`}
         />
         <div className="min-w-0">
-          <p className={`break-words font-medium ${todo.completed ? 'text-gray-500 line-through' : 'text-gray-900'}`}>
-            {todo.title}
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className={`break-words font-medium ${todo.completed ? 'text-gray-500 line-through' : 'text-gray-900'}`}>
+              {todo.title}
+            </p>
+            <PriorityBadge priority={todo.priority} />
+          </div>
           <div className="mt-1 flex flex-wrap gap-x-3 text-sm text-gray-600">
-            <span className="capitalize">{todo.priority} priority</span>
             {todo.due_date && <time dateTime={todo.due_date}>{formatSingaporeDate(new Date(todo.due_date))}</time>}
           </div>
         </div>
@@ -213,6 +235,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
   const [title, setTitle] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [priority, setPriority] = useState<Priority>('medium');
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all');
   const [activeEdit, setActiveEdit] = useState<Todo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -237,7 +260,14 @@ export default function TodoApp({ userId }: TodoAppProps) {
     };
   }, []);
 
-  const sections = useMemo(() => sectionTodos(todos, now), [todos, now]);
+  const filteredTodos = useMemo(
+    () =>
+      priorityFilter === 'all'
+        ? todos
+        : todos.filter((todo) => todo.priority === priorityFilter),
+    [todos, priorityFilter],
+  );
+  const sections = useMemo(() => sectionTodos(filteredTodos, now), [filteredTodos, now]);
 
   async function createTodo(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -398,6 +428,22 @@ export default function TodoApp({ userId }: TodoAppProps) {
       )}
       {!loading && !error && todos.length === 0 && (
         <p className="mt-8 text-center text-gray-600">No todos yet. Add one above to get started.</p>
+      )}
+      {!loading && todos.length > 0 && (
+        <label className="mt-8 flex items-center gap-3">
+          <span className="font-medium">Filter by priority</span>
+          <select
+            aria-label="Filter by priority"
+            value={priorityFilter}
+            onChange={(event) => setPriorityFilter(event.target.value as PriorityFilter)}
+            className="rounded border border-gray-300 bg-white px-3 py-2"
+          >
+            <option value="all">All Priorities</option>
+            <option value="high">High Priority</option>
+            <option value="medium">Medium Priority</option>
+            <option value="low">Low Priority</option>
+          </select>
+        </label>
       )}
       {loading ? (
         <p className="mt-8" role="status">Loading todos…</p>
