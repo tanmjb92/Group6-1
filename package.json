@@ -1,0 +1,43 @@
+{
+  "name": "todo-app",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint app lib tests middleware.ts next.config.ts eslint.config.mjs vitest.config.ts playwright.config.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.0",
+    "better-sqlite3": "^12.4.1",
+    "jose": "^6.1.0",
+    "next": "^16.4.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@vitest/coverage-v8": "^4.1.12",
+    "@tailwindcss/postcss": "^4.1.16",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "eslint": "^9.39.1",
+    "eslint-config-next": "^16.4.3",
+    "tailwindcss": "^4.1.16",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.8"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "unrs-resolver@1.12.2": true
+  }
+}

@@ -201,6 +201,22 @@ You should see output like:
 added 345 packages, and audited 346 packages in 45s
 ```
 
+### Configure Passkey Authentication
+Copy `.env.example` to `.env.local`, then replace `SESSION_SECRET` with a fresh
+random value. Generate one with:
+```bash
+node -p "require('node:crypto').randomBytes(32).toString('base64url')"
+```
+
+For local development, keep `RP_ID=localhost` and
+`RP_ORIGIN=http://localhost:3000`. Passkeys are origin-bound, so the RP
+configuration must match the address used in the browser. Do not commit
+`.env.local`; production must use HTTPS and a strong, independently generated
+`SESSION_SECRET`.
+
+The current app foundation implements Feature 11 (WebAuthn authentication).
+Other todo features described in the PRPs remain to be implemented.
+
 ### Project Structure Verification
 Ensure you have these key files:
 ```
