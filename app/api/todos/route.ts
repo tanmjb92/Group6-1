@@ -44,5 +44,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: result.error }, { status: 400 });
   }
 
-  return NextResponse.json(todoDB.create(session.userId, result.data), { status: 201 });
+  try {
+    return NextResponse.json(todoDB.create(session.userId, result.data), { status: 201 });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Tag not found') {
+      return NextResponse.json({ error: 'Tag not found' }, { status: 404 });
+    }
+    throw error;
+  }
 }

@@ -21,6 +21,7 @@ const createSchema = z
     priority: prioritySchema.nullable().optional(),
     is_recurring: z.boolean().optional(),
     recurrence_pattern: recurrencePatternSchema.nullable().optional(),
+    tag_ids: z.array(z.number().int().positive()).optional(),
   })
   .strict();
 const updateSchema = z
@@ -31,6 +32,7 @@ const updateSchema = z
     completed: z.boolean().optional(),
     is_recurring: z.boolean().optional(),
     recurrence_pattern: recurrencePatternSchema.nullable().optional(),
+    tag_ids: z.array(z.number().int().positive()).optional(),
   })
   .strict();
 
@@ -41,6 +43,7 @@ export type TodoEditDraft = {
   priority: Priority;
   is_recurring: boolean;
   recurrence_pattern: RecurrencePattern;
+  tag_ids?: number[];
 };
 const PRIORITY_ERROR = "Must be 'high', 'medium', or 'low'.";
 const RECURRENCE_PATTERNS: RecurrencePattern[] = ['daily', 'weekly', 'monthly', 'yearly'];
@@ -123,6 +126,7 @@ export function validateCreateTodo(input: unknown, now: Date): Validation<Create
       priority: (result.data.priority ?? 'medium') as Priority,
       is_recurring: isRecurring,
       recurrence_pattern: isRecurring ? recurrencePattern : null,
+      ...(result.data.tag_ids !== undefined ? { tag_ids: [...new Set(result.data.tag_ids)] } : {}),
     },
   };
 }
@@ -175,6 +179,7 @@ export function validateUpdateTodo(
   if (result.data.recurrence_pattern !== undefined) {
     data.recurrence_pattern = result.data.recurrence_pattern;
   }
+  if (result.data.tag_ids !== undefined) data.tag_ids = [...new Set(result.data.tag_ids)];
 
   const isRecurring = data.is_recurring ?? current?.is_recurring ?? false;
   const dueDate = data.due_date !== undefined ? data.due_date : (current?.due_date ?? null);
@@ -211,6 +216,7 @@ export function buildTodoEditUpdate(
     priority: draft.priority,
     is_recurring: draft.is_recurring,
     recurrence_pattern: draft.is_recurring ? draft.recurrence_pattern : null,
+    ...(draft.tag_ids !== undefined ? { tag_ids: [...new Set(draft.tag_ids)] } : {}),
   };
   if (draft.due_date !== currentDueDate) {
     if (!draft.due_date) {

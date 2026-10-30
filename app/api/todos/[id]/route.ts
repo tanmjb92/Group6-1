@@ -55,22 +55,42 @@ export async function PUT(request: Request, { params }: RouteContext) {
   }
 
   if (result.data.completed === true) {
-    const completion = todoDB.updateWithNextOccurrence(
-      id,
-      session.userId,
-      result.data,
-      calculateNextDueDate,
-    );
-    if (!completion.todo) return NextResponse.json({ error: 'Todo not found' }, { status: 404 });
-    return NextResponse.json({
-      ...completion.todo,
-      ...(completion.nextInstance ? { nextInstance: completion.nextInstance } : {}),
-    });
+    try {
+      const completion = todoDB.updateWithNextOccurrence(
+        id,
+        session.userId,
+        result.data,
+        calculateNextDueDate,
+      );
+      if (!completion.todo) return NextResponse.json({ error: 'Todo not found' }, { status: 404 });
+      return NextResponse.json({
+        ...completion.todo,
+        ...(completion.nextInstance ? { nextInstance: completion.nextInstance } : {}),
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Tag not found') {
+        return NextResponse.json({ error: 'Tag not found' }, { status: 404 });
+      }
+      if (error instanceof Error && error.message === 'Todo not found') {
+        return NextResponse.json({ error: 'Todo not found' }, { status: 404 });
+      }
+      throw error;
+    }
   }
 
-  const updated = todoDB.update(id, session.userId, result.data);
-  if (!updated) return NextResponse.json({ error: 'Todo not found' }, { status: 404 });
-  return NextResponse.json(updated);
+  try {
+    const updated = todoDB.update(id, session.userId, result.data);
+    if (!updated) return NextResponse.json({ error: 'Todo not found' }, { status: 404 });
+    return NextResponse.json(updated);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Tag not found') {
+      return NextResponse.json({ error: 'Tag not found' }, { status: 404 });
+    }
+    if (error instanceof Error && error.message === 'Todo not found') {
+      return NextResponse.json({ error: 'Todo not found' }, { status: 404 });
+    }
+    throw error;
+  }
 }
 
 export async function DELETE(_request: Request, { params }: RouteContext) {

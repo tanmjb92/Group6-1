@@ -43,6 +43,17 @@ export interface Tag {
   user_id: number;
   name: string;
   color: string;
+  created_at: string;
+}
+
+export interface CreateTagInput {
+  name: string;
+  color?: string;
+}
+
+export interface UpdateTagInput {
+  name?: string;
+  color?: string;
 }
 
 export interface CreateTodoInput {
@@ -52,6 +63,7 @@ export interface CreateTodoInput {
   is_recurring?: boolean;
   recurrence_pattern?: RecurrencePattern | null;
   reminder_minutes?: number | null;
+  tag_ids?: number[];
 }
 
 export interface UpdateTodoInput {
@@ -61,6 +73,7 @@ export interface UpdateTodoInput {
   completed?: boolean;
   is_recurring?: boolean;
   recurrence_pattern?: RecurrencePattern | null;
+  tag_ids?: number[];
 }
 
 export interface User {
@@ -139,6 +152,23 @@ function createAuthDatabase(connection: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_todos_user_id ON todos(user_id);
     CREATE INDEX IF NOT EXISTS idx_todos_due_date ON todos(due_date);
 
+    CREATE TABLE IF NOT EXISTS tags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#3B82F6',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(user_id, name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_tags_user_id ON tags(user_id);
+
+    CREATE TABLE IF NOT EXISTS todo_tags (
+      todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+      tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+      PRIMARY KEY (todo_id, tag_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_todo_tags_tag_id ON todo_tags(tag_id);
+
     CREATE TABLE IF NOT EXISTS holidays (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       date TEXT NOT NULL,
@@ -172,6 +202,50 @@ function createAuthDatabase(connection: Database.Database) {
   const todosByUser = connection.prepare(
     'SELECT * FROM todos WHERE user_id = ? ORDER BY created_at DESC, id DESC',
   );
+  const tagsByUser = connection.prepare(
+    'SELECT id, user_id, name, color, created_at FROM tags WHERE user_id = ? ORDER BY name COLLATE NOCASE, id',
+  );
+  const tagById = connection.prepare(
+    'SELECT id, user_id, name, color, created_at FROM tags WHERE id = ? AND user_id = ?',
+  );
+  const tagsByTodoId = connection.prepare(
+    `SELECT tags.id, tags.user_id, tags.name, tags.color, tags.created_at
+     FROM tags INNER JOIN todo_tags ON todo_tags.tag_id = tags.id
+     WHERE todo_tags.todo_id = ? AND tags.user_id = ?
+     ORDER BY tags.name COLLATE NOCASE, tags.id`,
+  );
+
+  function getTodoTags(todoId: number, userId: number): Tag[] {
+    return tagsByTodoId.all(todoId, userId) as Tag[];
+  }
+
+  function replaceTodoTags(todoId: number, userId: number, tagIds: number[]): void {
+    if (!todoById.get(todoId, userId)) throw new Error('Todo not found');
+    const distinctIds = [...new Set(tagIds)];
+    if (distinctIds.length > 0) {
+      const placeholders = distinctIds.map(() => '?').join(', ');
+      const count = connection
+        .prepare(`SELECT COUNT(*) AS count FROM tags WHERE user_id = ? AND id IN (${placeholders})`)
+        .get(userId, ...distinctIds) as { count: number };
+      if (count.count !== distinctIds.length) throw new Error('Tag not found');
+    }
+
+    connection
+      .prepare(
+        'DELETE FROM todo_tags WHERE todo_id = ? AND EXISTS (SELECT 1 FROM todos WHERE id = ? AND user_id = ?)',
+      )
+      .run(todoId, todoId, userId);
+    const insert = connection.prepare(
+      'INSERT INTO todo_tags (todo_id, tag_id) SELECT ?, id FROM tags WHERE id = ? AND user_id = ? ON CONFLICT(todo_id, tag_id) DO NOTHING',
+    );
+    for (const tagId of distinctIds) insert.run(todoId, tagId, userId);
+  }
+
+  function hydrateTodo(row: Todo | undefined, userId: number): Todo | null {
+    const todo = toTodo(row);
+    if (!todo) return null;
+    return { ...todo, tags: getTodoTags(todo.id, userId) };
+  }
 
   const userDB = {
     findByUsername(username: string): User | null {
@@ -242,33 +316,123 @@ function createAuthDatabase(connection: Database.Database) {
     },
   };
 
+  const tagDB = {
+    findAllByUser(userId: number): Tag[] {
+      return tagsByUser.all(userId) as Tag[];
+    },
+    findById(id: number, userId: number): Tag | null {
+      return (tagById.get(id, userId) as Tag | undefined) ?? null;
+    },
+    create(userId: number, input: CreateTagInput): Tag {
+      const name = input.name.trim();
+      if (!name) throw new Error('Tag name is required');
+      const color = input.color ?? '#3B82F6';
+      if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new Error('Color must be a valid hex code');
+      const result = connection
+        .prepare('INSERT INTO tags (user_id, name, color) VALUES (?, ?, ?)')
+        .run(userId, name, color);
+      const tag = this.findById(Number(result.lastInsertRowid), userId);
+      if (!tag) throw new Error('Created tag could not be loaded');
+      return tag;
+    },
+    update(id: number, userId: number, input: UpdateTagInput): Tag | null {
+      const assignments: string[] = [];
+      const values: string[] = [];
+      if (input.name !== undefined) {
+        const name = input.name.trim();
+        if (!name) throw new Error('Tag name is required');
+        assignments.push('name = ?');
+        values.push(name);
+      }
+      if (input.color !== undefined) {
+        if (!/^#[0-9a-fA-F]{6}$/.test(input.color)) {
+          throw new Error('Color must be a valid hex code');
+        }
+        assignments.push('color = ?');
+        values.push(input.color);
+      }
+      if (assignments.length === 0) return this.findById(id, userId);
+      connection
+        .prepare(`UPDATE tags SET ${assignments.join(', ')} WHERE id = ? AND user_id = ?`)
+        .run(...values, id, userId);
+      return this.findById(id, userId);
+    },
+    delete(id: number, userId: number): boolean {
+      return (
+        connection.prepare('DELETE FROM tags WHERE id = ? AND user_id = ?').run(id, userId)
+          .changes === 1
+      );
+    },
+    attachToTodo(todoId: number, tagId: number, userId: number): boolean {
+      const valid = connection
+        .prepare(
+          `SELECT 1 FROM todos INNER JOIN tags ON tags.user_id = todos.user_id
+           WHERE todos.id = ? AND todos.user_id = ? AND tags.id = ?`,
+        )
+        .get(todoId, userId, tagId);
+      if (!valid) return false;
+      connection
+        .prepare(
+          'INSERT INTO todo_tags (todo_id, tag_id) VALUES (?, ?) ON CONFLICT(todo_id, tag_id) DO NOTHING',
+        )
+        .run(todoId, tagId);
+      return true;
+    },
+    detachFromTodo(todoId: number, tagId: number, userId: number): boolean {
+      const valid = connection
+        .prepare(
+          `SELECT 1 FROM todos INNER JOIN tags ON tags.user_id = todos.user_id
+           WHERE todos.id = ? AND todos.user_id = ? AND tags.id = ?`,
+        )
+        .get(todoId, userId, tagId);
+      if (!valid) return false;
+      connection
+        .prepare('DELETE FROM todo_tags WHERE todo_id = ? AND tag_id = ?')
+        .run(todoId, tagId);
+      return true;
+    },
+    findByTodoId(todoId: number): Tag[] {
+      return connection
+        .prepare(
+          `SELECT tags.id, tags.user_id, tags.name, tags.color, tags.created_at
+           FROM tags INNER JOIN todo_tags ON todo_tags.tag_id = tags.id
+           WHERE todo_tags.todo_id = ? ORDER BY tags.name COLLATE NOCASE, tags.id`,
+        )
+        .all(todoId) as Tag[];
+    },
+  };
+
   const todoDB = {
     findAllByUser(userId: number): Todo[] {
-      return (todosByUser.all(userId) as Todo[]).map((row) => toTodo(row)!);
+      return (todosByUser.all(userId) as Todo[]).map((row) => hydrateTodo(row, userId)!);
     },
     findById(id: number, userId: number): Todo | null {
-      return toTodo(todoById.get(id, userId) as Todo | undefined);
+      return hydrateTodo(todoById.get(id, userId) as Todo | undefined, userId);
     },
     create(userId: number, input: CreateTodoInput): Todo {
-      const result = connection
-        .prepare(
-          `INSERT INTO todos
-            (user_id, title, due_date, priority, is_recurring, recurrence_pattern, reminder_minutes, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          userId,
-          input.title.trim(),
-          input.due_date ?? null,
-          input.priority ?? 'medium',
-          Number(input.is_recurring ?? false),
-          input.is_recurring ? (input.recurrence_pattern ?? null) : null,
-          input.reminder_minutes ?? null,
-          getSingaporeNow().toISOString(),
-        );
-      const todo = this.findById(Number(result.lastInsertRowid), userId);
-      if (!todo) throw new Error('Created todo could not be loaded');
-      return todo;
+      return connection.transaction(() => {
+        const result = connection
+          .prepare(
+            `INSERT INTO todos
+              (user_id, title, due_date, priority, is_recurring, recurrence_pattern, reminder_minutes, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            userId,
+            input.title.trim(),
+            input.due_date ?? null,
+            input.priority ?? 'medium',
+            Number(input.is_recurring ?? false),
+            input.is_recurring ? (input.recurrence_pattern ?? null) : null,
+            input.reminder_minutes ?? null,
+            getSingaporeNow().toISOString(),
+          );
+        const id = Number(result.lastInsertRowid);
+        if (input.tag_ids !== undefined) replaceTodoTags(id, userId, input.tag_ids);
+        const todo = this.findById(id, userId);
+        if (!todo) throw new Error('Created todo could not be loaded');
+        return todo;
+      })();
     },
     update(id: number, userId: number, input: UpdateTodoInput): Todo | null {
       const assignments: string[] = [];
@@ -298,14 +462,20 @@ function createAuthDatabase(connection: Database.Database) {
         assignments.push('recurrence_pattern = ?');
         values.push(input.is_recurring === false ? null : (input.recurrence_pattern ?? null));
       }
-      if (assignments.length === 0) return this.findById(id, userId);
-
-      assignments.push('updated_at = ?');
-      values.push(getSingaporeNow().toISOString(), id, userId);
-      connection
-        .prepare(`UPDATE todos SET ${assignments.join(', ')} WHERE id = ? AND user_id = ?`)
-        .run(...values);
-      return this.findById(id, userId);
+      if (assignments.length === 0 && input.tag_ids === undefined) {
+        return this.findById(id, userId);
+      }
+      return connection.transaction(() => {
+        if (assignments.length > 0) {
+          assignments.push('updated_at = ?');
+          values.push(getSingaporeNow().toISOString(), id, userId);
+          connection
+            .prepare(`UPDATE todos SET ${assignments.join(', ')} WHERE id = ? AND user_id = ?`)
+            .run(...values);
+        }
+        if (input.tag_ids !== undefined) replaceTodoTags(id, userId, input.tag_ids);
+        return this.findById(id, userId);
+      })();
     },
     updateWithNextOccurrence(
       id: number,
@@ -344,6 +514,7 @@ function createAuthDatabase(connection: Database.Database) {
           is_recurring: true,
           recurrence_pattern: updated.recurrence_pattern,
           reminder_minutes: updated.reminder_minutes,
+          tag_ids: (updated.tags ?? []).map((tag) => tag.id),
         });
         return { todo: updated, nextInstance };
       })();
@@ -392,6 +563,7 @@ function createAuthDatabase(connection: Database.Database) {
     connection,
     userDB,
     authenticatorDB,
+    tagDB,
     todoDB,
     holidayDB,
     createUserWithAuthenticator,
@@ -407,6 +579,7 @@ const database = createDatabase(process.env.DATABASE_PATH ?? 'todos.db');
 export const db = database.connection;
 export const userDB = database.userDB;
 export const authenticatorDB = database.authenticatorDB;
+export const tagDB = database.tagDB;
 export const todoDB = database.todoDB;
 export const holidayDB = database.holidayDB;
 export const createUserWithAuthenticator = database.createUserWithAuthenticator;

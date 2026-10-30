@@ -218,6 +218,103 @@ describe('todo database', () => {
     expect(database.todoDB.findAllByUser(user.id)).toHaveLength(1);
   });
 
+  it('attaches tags atomically, hydrates them, and keeps ownership isolated', () => {
+    database = createDatabase(':memory:');
+    const owner = database.userDB.create('tag-owner');
+    const other = database.userDB.create('tag-other');
+    const todo = database.todoDB.create(owner.id, { title: 'Tagged task' });
+    const ownTag = database.tagDB.create(owner.id, { name: 'Work' });
+    const otherTag = database.tagDB.create(other.id, { name: 'Work' });
+
+    expect(database.tagDB.attachToTodo(todo.id, ownTag.id, owner.id)).toBe(true);
+    expect(database.tagDB.attachToTodo(todo.id, ownTag.id, owner.id)).toBe(true);
+    expect(database.tagDB.attachToTodo(todo.id, otherTag.id, owner.id)).toBe(false);
+    expect(database.todoDB.findById(todo.id, owner.id)?.tags).toEqual([ownTag]);
+    expect(database.todoDB.findAllByUser(owner.id)[0].tags).toEqual([ownTag]);
+    expect(database.tagDB.findAllByUser(other.id)).toEqual([otherTag]);
+    expect(database.connection.prepare('SELECT COUNT(*) AS count FROM todo_tags').get()).toEqual({
+      count: 1,
+    });
+  });
+
+  it('keeps same-user tag names unique, scopes updates, and cascades tag deletion', () => {
+    const activeDatabase = createDatabase(':memory:');
+    database = activeDatabase;
+    const owner = activeDatabase.userDB.create('tag-owner');
+    const other = activeDatabase.userDB.create('tag-other');
+    const todo = activeDatabase.todoDB.create(owner.id, { title: 'Tagged task' });
+    const tag = activeDatabase.tagDB.create(owner.id, { name: 'Work' });
+    expect(activeDatabase.tagDB.create(other.id, { name: 'Work' }).name).toBe('Work');
+    expect(() => activeDatabase.tagDB.create(owner.id, { name: 'Work' })).toThrow();
+    expect(activeDatabase.tagDB.update(tag.id, other.id, { name: 'Private' })).toBeNull();
+    activeDatabase.tagDB.attachToTodo(todo.id, tag.id, owner.id);
+
+    expect(activeDatabase.tagDB.delete(tag.id, other.id)).toBe(false);
+    expect(activeDatabase.tagDB.delete(tag.id, owner.id)).toBe(true);
+    expect(activeDatabase.todoDB.findById(todo.id, owner.id)?.tags).toEqual([]);
+    expect(activeDatabase.connection.prepare('SELECT COUNT(*) AS count FROM todo_tags').get()).toEqual({
+      count: 0,
+    });
+  });
+
+  it('atomically replaces todo tags and rolls back invalid cross-user assignments', () => {
+    const activeDatabase = createDatabase(':memory:');
+    database = activeDatabase;
+    const owner = activeDatabase.userDB.create('tag-owner');
+    const other = activeDatabase.userDB.create('tag-other');
+    const first = activeDatabase.tagDB.create(owner.id, { name: 'First' });
+    const second = activeDatabase.tagDB.create(owner.id, { name: 'Second' });
+    const foreign = activeDatabase.tagDB.create(other.id, { name: 'Foreign' });
+
+    expect(() => activeDatabase.todoDB.create(owner.id, { title: 'Invalid', tag_ids: [first.id, foreign.id] }))
+      .toThrow();
+    expect(activeDatabase.todoDB.findAllByUser(owner.id)).toEqual([]);
+    const todo = activeDatabase.todoDB.create(owner.id, { title: 'Valid', tag_ids: [first.id] });
+    expect(() => activeDatabase.todoDB.update(todo.id, owner.id, { title: 'Changed', tag_ids: [foreign.id] }))
+      .toThrow();
+    expect(activeDatabase.todoDB.findById(todo.id, owner.id)).toMatchObject({
+      title: 'Valid',
+      tags: [first],
+    });
+    expect(activeDatabase.todoDB.update(todo.id, owner.id, { tag_ids: [second.id, second.id] })?.tags)
+      .toEqual([second]);
+  });
+
+  it('copies tag associations to recurring instances in the completion transaction', () => {
+    const activeDatabase = createDatabase(':memory:');
+    database = activeDatabase;
+    const user = activeDatabase.userDB.create('recurrence-tags-owner');
+    const tag = activeDatabase.tagDB.create(user.id, { name: 'Repeat' });
+    const todo = activeDatabase.todoDB.create(user.id, {
+      title: 'Tagged repeat',
+      due_date: '2026-02-01T01:00:00.000Z',
+      is_recurring: true,
+      recurrence_pattern: 'monthly',
+      tag_ids: [tag.id],
+    });
+
+    const result = activeDatabase.todoDB.updateWithNextOccurrence(
+      todo.id,
+      user.id,
+      { completed: true },
+      () => '2026-03-01T01:00:00.000Z',
+    );
+    expect(result.nextInstance?.tags).toEqual([tag]);
+  });
+
+  it('detaches an association idempotently and rejects foreign todo access', () => {
+    const activeDatabase = createDatabase(':memory:');
+    database = activeDatabase;
+    const owner = activeDatabase.userDB.create('tag-owner');
+    const other = activeDatabase.userDB.create('tag-other');
+    const todo = activeDatabase.todoDB.create(owner.id, { title: 'Tagged task' });
+    const tag = activeDatabase.tagDB.create(owner.id, { name: 'Work' });
+    expect(activeDatabase.tagDB.detachFromTodo(todo.id, tag.id, owner.id)).toBe(true);
+    expect(activeDatabase.tagDB.attachToTodo(todo.id, tag.id, owner.id)).toBe(true);
+    expect(activeDatabase.tagDB.detachFromTodo(todo.id, tag.id, owner.id)).toBe(true);
+    expect(activeDatabase.tagDB.detachFromTodo(todo.id, tag.id, other.id)).toBe(false);
+  });
+
   it('deletes only an owned todo and cascades to dependent rows', () => {
     database = createDatabase(':memory:');
     const user = database.userDB.create('todo-owner');
@@ -228,23 +325,10 @@ describe('todo database', () => {
         id INTEGER PRIMARY KEY,
         todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE
       );
-      CREATE TABLE tags (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE
-      );
-      CREATE TABLE todo_tags (
-        todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
-        tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE
-      );
     `);
     database.connection.prepare('INSERT INTO subtasks (todo_id) VALUES (?)').run(todo.id);
-    const tagId = Number(
-      database.connection.prepare('INSERT INTO tags (user_id) VALUES (?)').run(user.id)
-        .lastInsertRowid,
-    );
-    database.connection
-      .prepare('INSERT INTO todo_tags (todo_id, tag_id) VALUES (?, ?)')
-      .run(todo.id, tagId);
+    const tag = database.tagDB.create(user.id, { name: 'Cascade' });
+    database.tagDB.attachToTodo(todo.id, tag.id, user.id);
 
     expect(database.todoDB.delete(todo.id, otherUser.id)).toBe(false);
     expect(database.todoDB.delete(todo.id, user.id)).toBe(true);

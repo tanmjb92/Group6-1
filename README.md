@@ -14,6 +14,15 @@ Cells show three todos and a count for additional items. Undated todos and futur
 recurring occurrences that do not yet exist are not displayed. List-view filters
 do not apply to the calendar.
 
+## Tags (Feature 06)
+
+Use **Manage Tags** above the todo form to create, edit, or delete your own
+color-coded tags. Tags can be selected on new and existing todos, and clicking
+a tag pill filters the todo list. The tag and priority filters compose. Tag
+colors retain the chosen background; pill text automatically switches between
+black and white to maintain WCAG AA contrast. Deleting a tag removes its todo
+associations and clears it from the active filter.
+
 Seed the shared holiday table before using the holiday overlay:
 
 ```bash
