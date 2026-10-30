@@ -12,6 +12,9 @@ export default defineConfig({
         'lib/tag-input.ts',
         'lib/todo-input.ts',
         'lib/reminder-options.ts',
+        'lib/template-input.ts',
+        'lib/filters.ts',
+        'lib/filter-presets.ts',
       ],
       exclude: ['**/*.test.ts'],
       thresholds: {

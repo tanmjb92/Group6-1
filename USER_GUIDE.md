@@ -351,14 +351,27 @@ Save frequently used todo patterns as reusable templates for instant creation of
    - Title
    - Priority
    - Recurrence settings (if applicable)
-   - Reminder timing (if applicable)
-2. Click **"💾 Save as Template"** button (appears when title is filled)
+   - Due date (optional; converted to a relative offset, never stored as a fixed date)
+2. Click **"Save as Template"** button (appears when title is filled)
 3. Enter template details in modal:
    - **Name**: Template identifier (required)
    - **Description**: Purpose/details (optional)
    - **Category**: Group similar templates (optional)
+   - **Due-date offset (minutes)**: Whole minutes from each use to the new due date;
+     leave blank for no due date. Recurring templates require a positive offset.
+   - Title, priority, and recurrence can also be adjusted before saving.
+   - **Reminder timing**: No reminder, or 15m/30m/1h/2h/1d/2d/1w before due.
+     Reminder settings require a positive due-date offset.
+   - **Checklist**: Add, edit, remove, and move items up to define their order.
 4. Click **"Save Template"**
 5. Template saved to your library
+
+#### From an Existing Todo
+Click **"Save as Template"** on the todo row to capture its title, priority,
+recurrence, reminder, and checklist. Completed checklist items are saved as
+unchecked patterns, not completed tasks. A future due date becomes a relative
+offset; for overdue todos, choose a new offset in the editor when recurrence or
+reminders require it.
 
 ### Using Templates
 
@@ -370,7 +383,7 @@ Save frequently used todo patterns as reusable templates for instant creation of
    - Example: `"Weekly Review (Work)"`
 
 #### From Template Manager
-1. Click **"📋 Templates"** button (top navigation)
+1. Click **"Templates"** above the todo form
 2. Browse all saved templates
 3. Click **"Use"** button on any template
 4. Todo created immediately
@@ -379,11 +392,12 @@ Save frequently used todo patterns as reusable templates for instant creation of
 ### Managing Templates
 
 #### Template Manager Modal
-Access via **"📋 Templates"** button to:
+Access via **"Templates"** button to:
 - View all templates in a list
 - See template details (name, description, category)
 - Preview settings (priority, recurrence)
 - Use templates with one click
+- Filter by category and edit saved templates
 - Delete templates no longer needed
 
 #### Template Information Display
@@ -394,7 +408,8 @@ Each template shows:
 - **Priority** - color-coded badge
 - **Recurrence** - 🔄 badge if recurring
 - **Pattern** - recurrence frequency
-- **Reminder** - 🔔 badge if set
+- **Relative due-date offset** - resolved anew each time the template is used
+- **Reminder timing** and ordered checklist preview in a scrollable list
 
 #### Deleting Templates
 1. In template modal, click **"Delete"** on any template
@@ -409,14 +424,30 @@ Templates preserve:
 - ✅ Priority level (high/medium/low)
 - ✅ Recurrence settings (enabled/disabled)
 - ✅ Recurrence pattern (daily/weekly/monthly/yearly)
-- ✅ Reminder timing (minutes before due)
+- ✅ Relative due-date offset (optional)
 - ✅ Category information
 - ✅ Description
+- ✅ Reminder timing (copied to new todos)
+- ✅ Ordered subtask checklist (stored as JSON, recreated unchecked on every use)
 
 **Note**: Templates do NOT include:
-- ❌ Specific due dates (you set when creating)
-- ❌ Tags (selected when creating from template)
-- ❌ Subtasks (added after creation)
+- ❌ Specific due dates (calculated from the offset at use-time)
+- ❌ Tags (not copied; tag support is separate)
+
+Template creation/update APIs validate reminder options and checklist titles/positions
+and reject tag fields rather than silently discarding them. Templates without a due-date offset create
+undated, nonrecurring todos. Editing or deleting a template never changes existing
+todos. Duplicate template names are allowed.
+
+Template use creates the todo and all checklist items atomically: a failure does
+not leave a partial todo. A corrupted stored checklist produces an explicit error
+instead of silently dropping items. Existing templates are migrated automatically
+with empty checklists and no reminder settings.
+
+**Notification limitation:** Templates store/copy reminder timing, but browser
+notification delivery uses the same polling as ordinary todos. If the relative
+due-date offset is shorter than the reminder period, the calculated reminder is
+already due when the todo is created.
 
 ### Template Categories
 
@@ -464,14 +495,15 @@ Powerful search and filtering system to find exactly the todos you need with mul
 - Located at top of todo list (below todo form)
 - Full-width input with search icon (🔍)
 - Placeholder: "Search todos and subtasks..."
-- Clear button (✕) appears when typing
+- **Clear search** button appears when typing
 
 #### How It Works
 - **Searches**: Todo titles AND subtask titles
-- **Real-time**: Results update as you type
+- **Debounced**: Results update after a 300ms pause; no request is sent per keystroke
 - **Case-insensitive**: Finds "meeting" or "Meeting"
 - **Partial match**: "proj" finds "project" and "projection"
-- **Clear**: Click ✕ or delete all text
+- **Clear**: Click **Clear search** or delete all text; clearing bypasses the debounce
+- Tag names and template names are not searched; use the tag dropdown for tags
 
 #### Search Behavior
 ```
@@ -512,7 +544,7 @@ Located below search bar in a horizontal row:
 #### Active Filter Actions
 Appears when ANY filter is active:
 - **"Clear All"** button (red) - Removes all filters instantly
-- **"💾 Save Filter"** button (green) - Opens save filter modal
+- **"Save Filter"** button (green) - Opens save filter modal
 
 ### Advanced Filters Panel
 
@@ -543,13 +575,16 @@ Two date inputs side-by-side:
 - Use "From" only: all todos after that date
 - Use "To" only: all todos before that date
 - Only shows todos WITH due dates
+- Both bounds are inclusive and use Singapore calendar dates, even when stored
+  timestamps fall on a different UTC date
+- If From is after To, no todos match and a hint explains the invalid range
 
 #### 3. Saved Filter Presets
 Displayed if any presets exist:
 - **Preset pills** with name
 - **Apply button**: Click name to apply
-- **Delete button**: Click ✕ to remove
-- **Format**: `[Preset Name] [✕]`
+- **Delete button**: Click **Delete** next to the name and confirm
+- **Format**: `[Preset Name] [Delete]`
 
 ### Saving Filter Presets
 
@@ -560,7 +595,7 @@ Displayed if any presets exist:
    - Tag
    - Date range
    - Completion status
-2. Click **"💾 Save Filter"** button (appears when filters active)
+2. Click **"Save Filter"** button (appears when filters active)
 3. Modal opens showing:
    - Name input field
    - Current filter preview
@@ -589,8 +624,12 @@ Current Filters:
 #### Preset Storage
 - **Location**: Browser localStorage
 - **Persistence**: Survives page refresh
-- **User-specific**: Per browser/device
-- **Format**: JSON object
+- **Scope**: This browser/site only, not account-synced or private to one login;
+  people sharing the browser profile can see the same preset names and queries
+- **Format**: Validated JSON array at `todo-app:filter-presets`
+- Invalid/blocked storage shows an error without preventing normal filtering.
+  Saving a new preset replaces malformed stored preset data.
+- Storage-full or blocked writes show an error and do not claim a save/delete succeeded
 
 ### Applying Saved Presets
 
@@ -599,6 +638,8 @@ Current Filters:
 2. Find "Saved Filter Presets" section
 3. Click preset name
 4. All filters applied instantly
+5. Every filter dimension is replaced, including resetting defaults. If a saved
+   tag was deleted, the tag dimension falls back to All Tags with a notice.
 
 #### Method 2: Quick Application
 - Presets visible when advanced panel open
@@ -609,7 +650,7 @@ Current Filters:
 
 #### Deleting Presets
 1. Locate preset in advanced panel
-2. Click ✕ button next to name
+2. Click **Delete** next to name
 3. Confirm deletion
 4. Preset removed from localStorage
 
@@ -653,7 +694,8 @@ Result: Shows only todos that are:
 #### Filter Results
 - Todo counts update: "Overdue (X)", "Pending (X)", "Completed (X)"
 - Sections auto-hide if empty
-- "No results" state if all filtered out
+- **"No todos match your filters."** if a populated list is filtered to zero
+- **"No todos yet. Add one above to get started."** if the list itself is empty
 
 ### Search Examples
 

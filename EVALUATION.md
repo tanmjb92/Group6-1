@@ -220,39 +220,40 @@ This document provides a comprehensive checklist for evaluating the completeness
 ---
 
 ### ✅ Feature 07: Template System
-**Status:** ⬜ Not Started | ⬜ In Progress | ⬜ Complete | ⬜ Verified
+**Status:** Implemented and verified for template storage/copy behavior.
+Reminder settings are copied and use the same browser notification polling as ordinary todos.
 
 **Implementation Checklist:**
-- [ ] Database: `templates` table
-- [ ] API endpoint: `GET /api/templates`
-- [ ] API endpoint: `POST /api/templates`
-- [ ] API endpoint: `PUT /api/templates/[id]`
-- [ ] API endpoint: `DELETE /api/templates/[id]`
-- [ ] API endpoint: `POST /api/templates/[id]/use`
-- [ ] "Save as Template" button
-- [ ] Save template modal (name, description, category)
-- [ ] "Use Template" button
-- [ ] Template selection modal
-- [ ] Category filter in template modal
-- [ ] Template preview (shows settings)
-- [ ] Subtasks JSON serialization
-- [ ] Due date offset calculation
+- [x] Database: `templates` table
+- [x] API endpoint: `GET /api/templates`
+- [x] API endpoint: `POST /api/templates`
+- [x] API endpoint: `PUT /api/templates/[id]`
+- [x] API endpoint: `DELETE /api/templates/[id]`
+- [x] API endpoint: `POST /api/templates/[id]/use`
+- [x] "Save as Template" button
+- [x] Save template modal (name, description, category)
+- [x] "Use Template" button
+- [x] Template selection modal
+- [x] Category filter in template modal
+- [x] Template preview (shows settings)
+- [x] Subtasks JSON serialization
+- [x] Due date offset calculation
 
 **Testing:**
-- [ ] E2E test: Save todo as template
-- [ ] E2E test: Create todo from template
-- [ ] E2E test: Template preserves settings
-- [ ] E2E test: Subtasks created from template
-- [ ] E2E test: Edit template
-- [ ] E2E test: Delete template
-- [ ] Unit test: Subtasks JSON serialization
+- [x] E2E test: Save todo as template
+- [x] E2E test: Create todo from template
+- [x] E2E test: Template preserves settings
+- [x] E2E test: Subtasks created from template
+- [x] E2E test: Edit template
+- [x] E2E test: Delete template
+- [x] Unit test: Subtasks JSON serialization
 
 **Acceptance Criteria:**
-- [ ] Can save current todo as template
-- [ ] Templates include all metadata
-- [ ] Using template creates new todo
-- [ ] Subtasks recreated from JSON
-- [ ] Category filtering works
+- [x] Can save current todo as template
+- [x] Templates include all metadata
+- [x] Using template creates new todo
+- [x] Subtasks recreated from JSON
+- [x] Category filtering works
 
 ---
 

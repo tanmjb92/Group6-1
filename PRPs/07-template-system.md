@@ -1,5 +1,12 @@
 # Template System
 
+> Implementation: template CRUD, quick use, category filtering, previews, editing,
+> priority, recurrence, relative due dates, reminder settings, and ordered checklist
+> snapshots are supported. Existing todos can also be captured as templates.
+> Checklist creation is atomic with todo creation. Browser notification delivery
+> uses the same polling flow for template-created todos; templates store and copy reminder timing.
+> Corrupted checklist JSON produces an explicit error rather than data loss.
+
 Save frequently used todo patterns (title, priority, recurrence, reminder, and subtask checklist) as reusable templates for instant creation of common tasks.
 
 **Dependencies**: Builds on the `todos` model from [PRP 01 - Todo CRUD Operations](./01-todo-crud-operations.md); reuses `priority` from [PRP 02 - Priority System](./02-priority-system.md), recurrence fields from [PRP 03 - Recurring Todos](./03-recurring-todos.md), and `reminder_minutes` from [PRP 04 - Reminders & Notifications](./04-reminders-notifications.md). Reproduces the subtask shape (`title`, `position`) from [PRP 05 - Subtasks & Progress Tracking](./05-subtasks-progress.md) via JSON serialization rather than a live foreign-key relationship.
@@ -12,7 +19,8 @@ The Template System lets a user capture the recurring "shape" of a todo — its 
 
 Templates deliberately exclude two things that are inherently instance-specific: a concrete **due date** (only a relative offset is stored) and **tags** (chosen fresh each time a todo is created, since tag relevance can vary per instance).
 
-> **Note on source conflict**: `USER_GUIDE.md` §9 describes templates as excluding subtasks ("added after creation"). This PRP instead follows `.github/copilot-instructions.md` and `EVALUATION.md` (Feature 07), which are explicit and detailed that subtasks **are** captured via `subtasks_json` and recreated on use — see Technical Requirements below. Treat this PRP's schema as authoritative; the user guide's description is a simplification.
+> **Checklist persistence**: `USER_GUIDE.md` §9, the implementation, and this PRP
+> include checklist snapshots via `subtasks_json`, recreated unchecked on use.
 
 ## User Stories
 
@@ -281,7 +289,10 @@ function TemplateCard({ template, onUse, onDelete }: { template: Template; onUse
 ## Edge Cases
 
 - **No due-date offset**: `due_date_offset_minutes` is `NULL` → the created todo has `due_date: null`. This is the common case (most templates don't imply a specific timing).
-- **Malformed `subtasks_json`**: if a row is ever corrupted (manual DB edit, migration bug), `JSON.parse` must be wrapped in try/catch; on failure, create the todo with zero subtasks rather than failing the whole "use" request.
+- **Malformed `subtasks_json`**: parsing and shape validation must surface an explicit
+  error. The use endpoint returns 409 and creates no todo, avoiding silent loss of
+  checklist items. The manager displays the error; replacing the checklist through
+  an update or deleting/recreating the template repairs the entry.
 - **Deleting a template mid-use**: if a `DELETE /api/templates/[id]` and a `POST /api/templates/[id]/use` race (e.g., two browser tabs), the `use` request should 404 if the template is already gone; already-created todos from prior uses are unaffected since there is no foreign key from `todos` back to `templates`.
 - **Duplicate template names**: unlike tags, template names are **not** required to be unique per user — the schema has no `UNIQUE` constraint on `(user_id, name)`. Two templates named "Weekly Review" are valid and both appear in the list.
 - **Large `subtasks_json`**: no enforced cap on subtask count per template; very large lists should still round-trip correctly through `JSON.stringify`/`JSON.parse`, but the UI should scroll rather than break layout in the manager preview.
@@ -316,7 +327,7 @@ Test file: `tests/09-templates.spec.ts`. Use `tests/helpers.ts` methods (`create
 
 **Unit tests:**
 - [ ] `subtasks_json` round-trip: an array of `{ title, position }` serializes and deserializes losslessly
-- [ ] Malformed `subtasks_json` string causes the parser to fall back to an empty subtask array instead of throwing
+- [ ] Malformed `subtasks_json` string produces an explicit error and creates no partial todo
 - [ ] Due-date-offset calculation: given a fixed `getSingaporeNow()` and an offset in minutes, the resulting `due_date` is correct to the minute
 - [ ] Template creation rejects `is_recurring: true` with no `due_date_offset_minutes` (or documents the chosen fallback behavior, per Edge Cases)
 

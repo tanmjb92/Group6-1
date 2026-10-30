@@ -63,7 +63,7 @@ function singaporeDateTimeLocal(date: Date): string {
 test('offers all reminder presets, disables the control without a due date, and displays badges', async ({ page }) => {
   await installNotificationMock(page);
   const cdp = await register(page, `reminder-presets-${Date.now()}`);
-  await expect(page.getByRole('heading', { name: 'Pending (0)' })).toBeVisible();
+  await expect(page.getByText('No todos yet. Add one above to get started.')).toBeVisible();
   const reminder = page.getByLabel('Reminder');
   await expect(reminder).toBeDisabled();
   await expect(reminder.locator('option')).toHaveCount(8);
@@ -103,7 +103,7 @@ test('offers all reminder presets, disables the control without a due date, and 
 
 test('edits reminder timing and clears it when the due date is removed', async ({ page }) => {
   const cdp = await register(page, `reminder-edit-${Date.now()}`);
-  await expect(page.getByRole('heading', { name: 'Pending (0)' })).toBeVisible();
+  await expect(page.getByText('No todos yet. Add one above to get started.')).toBeVisible();
   await page.getByLabel('Title').fill('Review design');
   await page.getByLabel('Due date and time (Singapore)').fill(
     singaporeDateTimeLocal(new Date(Date.now() + 60 * 60_000)),

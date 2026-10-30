@@ -36,7 +36,8 @@ function singaporeDateTimeLocal(date: Date): string {
 
 test('creates, completes, edits, and deletes todos', async ({ page }) => {
   const cdp = await register(page, `todo-crud-${Date.now()}`);
-  await expect(page.getByRole('heading', { name: 'Pending (0)' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Pending (0)' })).toHaveCount(0);
+  await expect(page.getByText('No todos yet. Add one above to get started.')).toBeVisible();
 
   await page.getByLabel('Title').fill('Call dentist');
   await page.getByRole('button', { name: 'Add', exact: true }).click();
@@ -55,7 +56,8 @@ test('creates, completes, edits, and deletes todos', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Delete' }).click();
   await expect(page.getByText('Call the dentist')).not.toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Completed (0)' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Completed (0)' })).toHaveCount(0);
+  await expect(page.getByText('No todos yet. Add one above to get started.')).toBeVisible();
   await cdp.detach();
 });
 
