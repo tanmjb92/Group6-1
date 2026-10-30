@@ -129,6 +129,95 @@ describe('todo database', () => {
     expect(database.todoDB.findById(todo.id, user.id)?.title).toBe('Renamed');
   });
 
+  it('persists recurrence settings when creating and updating todos', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('recurrence-owner');
+    const todo = database.todoDB.create(user.id, {
+      title: 'Pay rent',
+      due_date: '2026-02-01T01:00:00.000Z',
+      is_recurring: true,
+      recurrence_pattern: 'monthly',
+    });
+
+    expect(todo).toMatchObject({ is_recurring: true, recurrence_pattern: 'monthly' });
+    expect(
+      database.todoDB.update(todo.id, user.id, {
+        is_recurring: false,
+        recurrence_pattern: null,
+      }),
+    ).toMatchObject({ is_recurring: false, recurrence_pattern: null });
+  });
+
+  it('completes a recurring todo and creates at most one next occurrence atomically', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('recurrence-owner');
+    const todo = database.todoDB.create(user.id, {
+      title: 'Pay rent',
+      due_date: '2026-02-01T01:00:00.000Z',
+      priority: 'high',
+      is_recurring: true,
+      recurrence_pattern: 'monthly',
+      reminder_minutes: 60,
+    });
+    const calculateNext = (dueDate: string, pattern: 'daily' | 'weekly' | 'monthly' | 'yearly') =>
+      pattern === 'monthly' ? '2026-03-01T01:00:00.000Z' : dueDate;
+
+    const first = database.todoDB.updateWithNextOccurrence(
+      todo.id,
+      user.id,
+      { completed: true },
+      calculateNext,
+    );
+    const repeated = database.todoDB.updateWithNextOccurrence(
+      todo.id,
+      user.id,
+      { completed: true },
+      calculateNext,
+    );
+    database.todoDB.update(todo.id, user.id, { completed: false });
+    const completedAgain = database.todoDB.updateWithNextOccurrence(
+      todo.id,
+      user.id,
+      { completed: true },
+      calculateNext,
+    );
+
+    expect(first.todo).toMatchObject({ id: todo.id, completed: true });
+    expect(first.nextInstance).toMatchObject({
+      title: 'Pay rent',
+      due_date: '2026-03-01T01:00:00.000Z',
+      priority: 'high',
+      completed: false,
+      is_recurring: true,
+      recurrence_pattern: 'monthly',
+      reminder_minutes: 60,
+    });
+    expect(repeated).toMatchObject({ todo: { id: todo.id, completed: true }, nextInstance: null });
+    expect(completedAgain).toMatchObject({
+      todo: { id: todo.id, completed: true },
+      nextInstance: null,
+    });
+    expect(database.todoDB.findAllByUser(user.id)).toHaveLength(2);
+  });
+
+  it('does not create another occurrence for non-recurring completion', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('recurrence-owner');
+    const todo = database.todoDB.create(user.id, { title: 'One-off task' });
+
+    const result = database.todoDB.updateWithNextOccurrence(
+      todo.id,
+      user.id,
+      { completed: true },
+      () => {
+        throw new Error('Date calculation should not run');
+      },
+    );
+
+    expect(result).toMatchObject({ todo: { completed: true }, nextInstance: null });
+    expect(database.todoDB.findAllByUser(user.id)).toHaveLength(1);
+  });
+
   it('deletes only an owned todo and cascades to dependent rows', () => {
     database = createDatabase(':memory:');
     const user = database.userDB.create('todo-owner');

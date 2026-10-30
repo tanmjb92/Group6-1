@@ -8,7 +8,13 @@ describe('todo input validation', () => {
   it('trims titles and applies creation defaults', () => {
     expect(validateCreateTodo({ title: '  Buy milk  ' }, now)).toEqual({
       success: true,
-      data: { title: 'Buy milk', due_date: null, priority: 'medium' },
+      data: {
+        title: 'Buy milk',
+        due_date: null,
+        priority: 'medium',
+        is_recurring: false,
+        recurrence_pattern: null,
+      },
     });
   });
 
@@ -45,7 +51,13 @@ describe('todo input validation', () => {
   it('defaults null creation priority to medium and reports invalid values precisely', () => {
     expect(validateCreateTodo({ title: 'Task', priority: null }, now)).toEqual({
       success: true,
-      data: { title: 'Task', due_date: null, priority: 'medium' },
+      data: {
+        title: 'Task',
+        due_date: null,
+        priority: 'medium',
+        is_recurring: false,
+        recurrence_pattern: null,
+      },
     });
     expect(validateCreateTodo({ title: 'Task', priority: 'urgent' }, now)).toEqual({
       success: false,
@@ -54,6 +66,59 @@ describe('todo input validation', () => {
     expect(validateCreateTodo({ title: 'Task', priority: 'HIGH' }, now)).toMatchObject({
       success: false,
       error: "Invalid priority: HIGH. Must be 'high', 'medium', or 'low'.",
+    });
+  });
+
+  it('requires a due date and valid pattern for recurring todos', () => {
+    expect(
+      validateCreateTodo(
+        { title: 'Daily task', is_recurring: true, recurrence_pattern: 'daily' },
+        now,
+      ),
+    ).toMatchObject({
+      success: false,
+      error: 'Recurring todos require a due date',
+    });
+    expect(
+      validateCreateTodo(
+        {
+          title: 'Daily task',
+          due_date: '2026-01-16T04:30:00.000Z',
+          is_recurring: true,
+          recurrence_pattern: 'hourly',
+        },
+        now,
+      ),
+    ).toMatchObject({
+      success: false,
+      error: 'Invalid recurrence pattern',
+    });
+  });
+
+  it('accepts recurring create data and defaults recurrence off', () => {
+    expect(
+      validateCreateTodo(
+        {
+          title: 'Daily task',
+          due_date: '2026-01-16T04:30:00.000Z',
+          is_recurring: true,
+          recurrence_pattern: 'daily',
+        },
+        now,
+      ),
+    ).toEqual({
+      success: true,
+      data: {
+        title: 'Daily task',
+        due_date: '2026-01-16T04:30:00.000Z',
+        priority: 'medium',
+        is_recurring: true,
+        recurrence_pattern: 'daily',
+      },
+    });
+    expect(validateCreateTodo({ title: 'One-off task' }, now)).toMatchObject({
+      success: true,
+      data: { is_recurring: false, recurrence_pattern: null },
     });
   });
 
@@ -91,6 +156,54 @@ describe('todo input validation', () => {
     });
   });
 
+  it('validates recurrence against the resulting todo state on update', () => {
+    const todo: Todo = {
+      id: 1,
+      user_id: 1,
+      title: 'Task',
+      completed: false,
+      due_date: '2026-01-16T04:30:00.000Z',
+      priority: 'medium',
+      is_recurring: false,
+      recurrence_pattern: null,
+      reminder_minutes: null,
+      last_notification_sent: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: null,
+    };
+
+    expect(
+      validateUpdateTodo({ is_recurring: true, recurrence_pattern: 'weekly' }, now, todo),
+    ).toEqual({
+      success: true,
+      data: { is_recurring: true, recurrence_pattern: 'weekly' },
+    });
+    expect(validateUpdateTodo({ is_recurring: true }, now, todo)).toMatchObject({
+      success: false,
+      error: 'Invalid recurrence pattern',
+    });
+    expect(
+      validateUpdateTodo(
+        { due_date: null },
+        now,
+        { ...todo, is_recurring: true, recurrence_pattern: 'daily' },
+      ),
+    ).toMatchObject({
+      success: false,
+      error: 'Recurring todos require a due date',
+    });
+    expect(
+      validateUpdateTodo(
+        { due_date: null, is_recurring: false },
+        now,
+        { ...todo, is_recurring: true, recurrence_pattern: 'daily' },
+      ),
+    ).toEqual({
+      success: true,
+      data: { due_date: null, is_recurring: false, recurrence_pattern: null },
+    });
+  });
+
   it('allows editing other fields while keeping an existing overdue date unchanged', () => {
     const todo: Todo = {
       id: 1,
@@ -110,9 +223,23 @@ describe('todo input validation', () => {
     expect(
       buildTodoEditUpdate(
         todo,
-        { title: 'Edited title', due_date: '2026-01-15T12:00', priority: 'high' },
+        {
+          title: 'Edited title',
+          due_date: '2026-01-15T12:00',
+          priority: 'high',
+          is_recurring: false,
+          recurrence_pattern: 'daily',
+        },
         now,
       ),
-    ).toEqual({ success: true, data: { title: 'Edited title', priority: 'high' } });
+    ).toEqual({
+      success: true,
+      data: {
+        title: 'Edited title',
+        priority: 'high',
+        is_recurring: false,
+        recurrence_pattern: null,
+      },
+    });
   });
 });

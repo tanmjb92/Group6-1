@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import type { Priority, Todo, UpdateTodoInput } from '@/lib/db';
+import type { Priority, RecurrencePattern, Todo, UpdateTodoInput } from '@/lib/db';
 import { buildTodoEditUpdate, type TodoEditDraft } from '@/lib/todo-input';
 import {
   fromSingaporeDateTimeLocal,
@@ -48,6 +48,17 @@ function PriorityBadge({ priority }: { priority: Priority }) {
   );
 }
 
+function RecurrenceBadge({ pattern }: { pattern: RecurrencePattern }) {
+  return (
+    <span
+      data-testid={`recurrence-badge-${pattern}`}
+      className="inline-flex items-center gap-1 rounded-full border border-purple-300 bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800 dark:border-purple-700 dark:bg-purple-950 dark:text-purple-100"
+    >
+      🔄 {pattern}
+    </span>
+  );
+}
+
 function TodoRow({
   todo,
   onToggle,
@@ -75,6 +86,9 @@ function TodoRow({
               {todo.title}
             </p>
             <PriorityBadge priority={todo.priority} />
+            {todo.is_recurring && todo.recurrence_pattern && (
+              <RecurrenceBadge pattern={todo.recurrence_pattern} />
+            )}
           </div>
           <div className="mt-1 flex flex-wrap gap-x-3 text-sm text-gray-600">
             {todo.due_date && <time dateTime={todo.due_date}>{formatSingaporeDate(new Date(todo.due_date))}</time>}
@@ -151,6 +165,10 @@ function TodoEditDialog({
     todo.due_date ? getSingaporeDateTimeLocal(new Date(todo.due_date)) : '',
   );
   const [priority, setPriority] = useState<Priority>(todo.priority);
+  const [isRecurring, setIsRecurring] = useState(todo.is_recurring);
+  const [recurrencePattern, setRecurrencePattern] = useState<RecurrencePattern>(
+    todo.recurrence_pattern ?? 'daily',
+  );
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -164,7 +182,13 @@ function TodoEditDialog({
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
-    const saved = await onSave(todo.id, { title, due_date: dueDate, priority });
+    const saved = await onSave(todo.id, {
+      title,
+      due_date: dueDate,
+      priority,
+      is_recurring: isRecurring,
+      recurrence_pattern: recurrencePattern,
+    });
     setSaving(false);
     if (saved) onCancel();
   }
@@ -201,10 +225,41 @@ function TodoEditDialog({
             type="datetime-local"
             min={localDateMinimum()}
             value={dueDate}
-            onChange={(event) => setDueDate(event.target.value)}
+            onChange={(event) => {
+              setDueDate(event.target.value);
+              if (!event.target.value) setIsRecurring(false);
+            }}
             className="w-full rounded border border-gray-300 px-3 py-2"
           />
         </label>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              aria-label="Repeat"
+              checked={isRecurring}
+              disabled={!dueDate}
+              onChange={(event) => setIsRecurring(event.target.checked)}
+            />
+            Repeat
+          </label>
+          {isRecurring && (
+            <select
+              aria-label="Recurrence pattern"
+              value={recurrencePattern}
+              onChange={(event) => setRecurrencePattern(event.target.value as RecurrencePattern)}
+              className="rounded border border-gray-300 px-3 py-2"
+            >
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+              <option value="yearly">Yearly</option>
+            </select>
+          )}
+          {!dueDate && (
+            <span className="text-xs text-gray-500">Set a due date to enable repeat</span>
+          )}
+        </div>
         <label className="block">
           <span className="mb-1 block text-sm font-medium">Priority</span>
           <select
@@ -235,6 +290,8 @@ export default function TodoApp({ userId }: TodoAppProps) {
   const [title, setTitle] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [priority, setPriority] = useState<Priority>('medium');
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [recurrencePattern, setRecurrencePattern] = useState<RecurrencePattern>('daily');
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all');
   const [activeEdit, setActiveEdit] = useState<Todo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -295,8 +352,8 @@ export default function TodoApp({ userId }: TodoAppProps) {
       completed: false,
       due_date: normalizedDueDate,
       priority,
-      is_recurring: false,
-      recurrence_pattern: null,
+      is_recurring: isRecurring,
+      recurrence_pattern: isRecurring ? recurrencePattern : null,
       reminder_minutes: null,
       last_notification_sent: null,
       created_at: now.toISOString(),
@@ -306,12 +363,20 @@ export default function TodoApp({ userId }: TodoAppProps) {
     setTitle('');
     setDueDate('');
     setPriority('medium');
+    setIsRecurring(false);
+    setRecurrencePattern('daily');
 
     try {
       const response = await fetch('/api/todos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: trimmedTitle, due_date: normalizedDueDate, priority }),
+        body: JSON.stringify({
+          title: trimmedTitle,
+          due_date: normalizedDueDate,
+          priority,
+          is_recurring: isRecurring,
+          recurrence_pattern: recurrencePattern,
+        }),
       });
       if (!response.ok) throw new Error(await errorMessage(response));
       const saved = (await response.json()) as Todo;
@@ -321,6 +386,8 @@ export default function TodoApp({ userId }: TodoAppProps) {
       setTitle(trimmedTitle);
       setDueDate(dueDate);
       setPriority(priority);
+      setIsRecurring(isRecurring);
+      setRecurrencePattern(recurrencePattern);
       setError(cause instanceof Error ? cause.message : 'Failed to create todo');
     }
   }
@@ -340,8 +407,15 @@ export default function TodoApp({ userId }: TodoAppProps) {
         body: JSON.stringify(changes),
       });
       if (!response.ok) throw new Error(await errorMessage(response));
-      const updated = (await response.json()) as Todo;
-      setTodos((current) => current.map((todo) => (todo.id === id ? updated : todo)));
+      const responseTodo = (await response.json()) as Todo & { nextInstance?: Todo };
+      const { nextInstance, ...updated } = responseTodo;
+      setTodos((current) => {
+        const updatedTodos = current.map((todo) => (todo.id === id ? updated : todo));
+        if (!nextInstance || updatedTodos.some((todo) => todo.id === nextInstance.id)) {
+          return updatedTodos;
+        }
+        return [...updatedTodos, nextInstance];
+      });
       return true;
     } catch (cause) {
       setTodos((current) => current.map((todo) => (todo.id === id ? previous : todo)));
@@ -397,10 +471,42 @@ export default function TodoApp({ userId }: TodoAppProps) {
               type="datetime-local"
               min={localDateMinimum()}
               value={dueDate}
-              onChange={(event) => setDueDate(event.target.value)}
+              onChange={(event) => {
+                setDueDate(event.target.value);
+                if (!event.target.value) setIsRecurring(false);
+              }}
               className="w-full rounded border border-gray-300 px-3 py-2"
             />
           </label>
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              aria-label="Repeat"
+              checked={isRecurring}
+              disabled={!dueDate}
+              onChange={(event) => setIsRecurring(event.target.checked)}
+            />
+            Repeat
+          </label>
+          {isRecurring && (
+            <label>
+              <span className="mb-1 block text-sm font-medium">Repeats</span>
+              <select
+                aria-label="Recurrence pattern"
+                value={recurrencePattern}
+                onChange={(event) => setRecurrencePattern(event.target.value as RecurrencePattern)}
+                className="w-full rounded border border-gray-300 px-3 py-2"
+              >
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+                <option value="yearly">Yearly</option>
+              </select>
+            </label>
+          )}
+          {!dueDate && (
+            <p className="text-xs text-gray-500">Set a due date to enable repeat</p>
+          )}
           <label>
             <span className="mb-1 block text-sm font-medium">Priority</span>
             <select

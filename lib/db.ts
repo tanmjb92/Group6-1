@@ -42,6 +42,9 @@ export interface CreateTodoInput {
   title: string;
   due_date?: string | null;
   priority?: Priority;
+  is_recurring?: boolean;
+  recurrence_pattern?: RecurrencePattern | null;
+  reminder_minutes?: number | null;
 }
 
 export interface UpdateTodoInput {
@@ -49,6 +52,8 @@ export interface UpdateTodoInput {
   due_date?: string | null;
   priority?: Priority;
   completed?: boolean;
+  is_recurring?: boolean;
+  recurrence_pattern?: RecurrencePattern | null;
 }
 
 export interface User {
@@ -118,6 +123,7 @@ function createAuthDatabase(connection: Database.Database) {
       priority TEXT NOT NULL DEFAULT 'medium',
       is_recurring INTEGER NOT NULL DEFAULT 0,
       recurrence_pattern TEXT,
+      next_occurrence_created INTEGER NOT NULL DEFAULT 0,
       reminder_minutes INTEGER,
       last_notification_sent TEXT,
       created_at TEXT NOT NULL,
@@ -126,6 +132,12 @@ function createAuthDatabase(connection: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_todos_user_id ON todos(user_id);
     CREATE INDEX IF NOT EXISTS idx_todos_due_date ON todos(due_date);
   `);
+  const todoColumns = connection.pragma('table_info(todos)') as Array<{ name: string }>;
+  if (!todoColumns.some((column) => column.name === 'next_occurrence_created')) {
+    connection.exec(
+      'ALTER TABLE todos ADD COLUMN next_occurrence_created INTEGER NOT NULL DEFAULT 0',
+    );
+  }
 
   const userByUsername = connection.prepare(
     'SELECT id, username, created_at FROM users WHERE username = ?',
@@ -225,14 +237,18 @@ function createAuthDatabase(connection: Database.Database) {
     create(userId: number, input: CreateTodoInput): Todo {
       const result = connection
         .prepare(
-          `INSERT INTO todos (user_id, title, due_date, priority, created_at)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO todos
+            (user_id, title, due_date, priority, is_recurring, recurrence_pattern, reminder_minutes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           userId,
           input.title.trim(),
           input.due_date ?? null,
           input.priority ?? 'medium',
+          Number(input.is_recurring ?? false),
+          input.is_recurring ? (input.recurrence_pattern ?? null) : null,
+          input.reminder_minutes ?? null,
           getSingaporeNow().toISOString(),
         );
       const todo = this.findById(Number(result.lastInsertRowid), userId);
@@ -259,6 +275,14 @@ function createAuthDatabase(connection: Database.Database) {
         assignments.push('completed = ?');
         values.push(Number(input.completed));
       }
+      if (input.is_recurring !== undefined) {
+        assignments.push('is_recurring = ?');
+        values.push(Number(input.is_recurring));
+      }
+      if (input.recurrence_pattern !== undefined || input.is_recurring === false) {
+        assignments.push('recurrence_pattern = ?');
+        values.push(input.is_recurring === false ? null : (input.recurrence_pattern ?? null));
+      }
       if (assignments.length === 0) return this.findById(id, userId);
 
       assignments.push('updated_at = ?');
@@ -267,6 +291,47 @@ function createAuthDatabase(connection: Database.Database) {
         .prepare(`UPDATE todos SET ${assignments.join(', ')} WHERE id = ? AND user_id = ?`)
         .run(...values);
       return this.findById(id, userId);
+    },
+    updateWithNextOccurrence(
+      id: number,
+      userId: number,
+      input: UpdateTodoInput,
+      calculateNextDueDate: (dueDate: string, pattern: RecurrencePattern) => string,
+    ): { todo: Todo | null; nextInstance: Todo | null } {
+      return connection.transaction(() => {
+        const existing = this.findById(id, userId);
+        if (!existing) return { todo: null, nextInstance: null };
+
+        const updated = this.update(id, userId, input);
+        if (!updated) return { todo: null, nextInstance: null };
+        const justCompleted = input.completed === true && !existing.completed;
+        if (
+          !justCompleted ||
+          !updated.is_recurring ||
+          !updated.recurrence_pattern ||
+          !updated.due_date
+        ) {
+          return { todo: updated, nextInstance: null };
+        }
+
+        const claimed = connection
+          .prepare(
+            `UPDATE todos SET next_occurrence_created = 1
+             WHERE id = ? AND user_id = ? AND next_occurrence_created = 0`,
+          )
+          .run(id, userId);
+        if (claimed.changes !== 1) return { todo: updated, nextInstance: null };
+
+        const nextInstance = this.create(userId, {
+          title: updated.title,
+          due_date: calculateNextDueDate(updated.due_date, updated.recurrence_pattern),
+          priority: updated.priority,
+          is_recurring: true,
+          recurrence_pattern: updated.recurrence_pattern,
+          reminder_minutes: updated.reminder_minutes,
+        });
+        return { todo: updated, nextInstance };
+      })();
     },
     delete(id: number, userId: number): boolean {
       return (

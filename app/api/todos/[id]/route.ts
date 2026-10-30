@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { todoDB } from '@/lib/db';
 import { validateUpdateTodo } from '@/lib/todo-input';
+import { calculateNextDueDate } from '@/lib/recurrence';
 import { getSingaporeNow } from '@/lib/timezone';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -34,9 +35,6 @@ export async function PUT(request: Request, { params }: RouteContext) {
 
   const id = parseId((await params).id);
   if (id === null) return NextResponse.json({ error: 'Todo not found' }, { status: 404 });
-  if (!todoDB.findById(id, session.userId)) {
-    return NextResponse.json({ error: 'Todo not found' }, { status: 404 });
-  }
 
   let body: unknown;
   try {
@@ -48,9 +46,26 @@ export async function PUT(request: Request, { params }: RouteContext) {
     throw error;
   }
 
-  const result = validateUpdateTodo(body, getSingaporeNow());
+  const existing = todoDB.findById(id, session.userId);
+  if (!existing) return NextResponse.json({ error: 'Todo not found' }, { status: 404 });
+
+  const result = validateUpdateTodo(body, getSingaporeNow(), existing);
   if (!result.success) {
     return NextResponse.json({ error: result.error }, { status: 400 });
+  }
+
+  if (result.data.completed === true) {
+    const completion = todoDB.updateWithNextOccurrence(
+      id,
+      session.userId,
+      result.data,
+      calculateNextDueDate,
+    );
+    if (!completion.todo) return NextResponse.json({ error: 'Todo not found' }, { status: 404 });
+    return NextResponse.json({
+      ...completion.todo,
+      ...(completion.nextInstance ? { nextInstance: completion.nextInstance } : {}),
+    });
   }
 
   const updated = todoDB.update(id, session.userId, result.data);
