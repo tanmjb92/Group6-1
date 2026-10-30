@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import type {
   CreateTagInput,
   CreateTemplateInput,
@@ -18,6 +18,7 @@ import type {
 import { REMINDER_LABELS, REMINDER_PRESETS } from '@/lib/reminder-options';
 import { buildTodoEditUpdate, type TodoEditDraft } from '@/lib/todo-input';
 import { ManageTagsModal, TagPill, TagSelector } from './tag-ui';
+import { LARGE_IMPORT_WARNING_BYTES, MAX_IMPORT_BODY_BYTES } from '@/lib/import-limits';
 import { SUBTASK_TITLE_MAX_LENGTH } from '@/lib/subtask-constants';
 import { calculateProgress } from '@/lib/subtask-progress';
 import {
@@ -50,6 +51,20 @@ async function errorMessage(response: Response): Promise<string> {
     // The response may not contain JSON.
   }
   return `Request failed (${response.status})`;
+}
+
+async function loadTodoData(signal?: AbortSignal): Promise<{ todos: Todo[]; tags: Tag[] }> {
+  const [todosResponse, tagsResponse] = await Promise.all([
+    fetch('/api/todos', { signal }),
+    fetch('/api/tags', { signal }),
+  ]);
+  if (!todosResponse.ok) throw new Error(await errorMessage(todosResponse));
+  if (!tagsResponse.ok) throw new Error(await errorMessage(tagsResponse));
+  const [todos, tags] = await Promise.all([
+    todosResponse.json() as Promise<Todo[]>,
+    tagsResponse.json() as Promise<Tag[]>,
+  ]);
+  return { todos, tags };
 }
 
 const PRIORITY_BADGE_STYLES: Record<Priority, string> = {
@@ -895,6 +910,12 @@ export default function TodoApp({ userId }: TodoAppProps) {
   const [presetDraft, setPresetDraft] = useState<FilterState | null>(null);
   const [manageTags, setManageTags] = useState(false);
   const [activeEdit, setActiveEdit] = useState<Todo | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [transferMessage, setTransferMessage] = useState<{
+    type: 'success' | 'error' | 'info';
+    text: string;
+  } | null>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => getSingaporeNow());
@@ -1077,17 +1098,8 @@ export default function TodoApp({ userId }: TodoAppProps) {
 
   useEffect(() => {
     const controller = new AbortController();
-    Promise.all([
-      fetch('/api/todos', { signal: controller.signal }),
-      fetch('/api/tags', { signal: controller.signal }),
-    ])
-      .then(async ([todosResponse, tagsResponse]) => {
-        if (!todosResponse.ok) throw new Error(await errorMessage(todosResponse));
-        if (!tagsResponse.ok) throw new Error(await errorMessage(tagsResponse));
-        const [todoRows, tagRows] = await Promise.all([
-          todosResponse.json() as Promise<Todo[]>,
-          tagsResponse.json() as Promise<Tag[]>,
-        ]);
+    loadTodoData(controller.signal)
+      .then(({ todos: todoRows, tags: tagRows }) => {
         setTags(tagRows);
         setTodos(todoRows);
       })
@@ -1452,6 +1464,93 @@ export default function TodoApp({ userId }: TodoAppProps) {
     setFilters((current) => ({ ...current, tagId: current.tagId === id ? 'all' : current.tagId }));
   }
 
+  async function importTodos(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setImporting(true);
+    setTransferMessage(null);
+    let importedCount: number | null = null;
+    try {
+      if (file.size > MAX_IMPORT_BODY_BYTES) {
+        throw new Error('Import file is too large (25 MiB maximum)');
+      }
+      if (file.size > LARGE_IMPORT_WARNING_BYTES) {
+        setTransferMessage({ type: 'info', text: 'Large import file; this may take a while.' });
+      }
+
+      let payload: unknown;
+      let text: string;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
+      } catch {
+        throw new Error('Invalid JSON format');
+      }
+      try {
+        payload = JSON.parse(text);
+      } catch (cause) {
+        if (cause instanceof SyntaxError) throw new Error('Invalid JSON format');
+        throw cause;
+      }
+
+      const response = await fetch('/api/todos/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) throw new Error(await errorMessage(response));
+      const result = (await response.json()) as { imported: number };
+      importedCount = result.imported;
+
+      try {
+        const refreshed = await loadTodoData();
+        setTodos(refreshed.todos);
+        setTags(refreshed.tags);
+      } catch {
+        setTransferMessage({
+          type: 'error',
+          text: `Imported ${importedCount} todos, but the list could not be refreshed.`,
+        });
+        return;
+      }
+
+      setTransferMessage({
+        type: 'success',
+        text: `Successfully imported ${importedCount} todos`,
+      });
+    } catch (cause) {
+      setTransferMessage({
+        type: 'error',
+        text: cause instanceof Error ? cause.message : 'Failed to import todos',
+      });
+    } finally {
+      setImporting(false);
+      if (importFileRef.current) importFileRef.current.value = '';
+    }
+  }
+
+  async function exportTodos(format: 'json' | 'csv') {
+    setTransferMessage(null);
+    try {
+      const response = await fetch(`/api/todos/export?format=${format}`);
+      if (!response.ok) throw new Error(await errorMessage(response));
+
+      const contentDisposition = response.headers.get('Content-Disposition') ?? '';
+      const filename = /filename="([^"]+)"/.exec(contentDisposition)?.[1] ?? `todos.${format}`;
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = filename;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    } catch (cause) {
+      setTransferMessage({
+        type: 'error',
+        text: cause instanceof Error ? cause.message : 'Failed to export todos',
+      });
+    }
+  }
+
   return (
     <div className="mt-8">
       <section className="rounded-xl bg-white p-6 shadow">
@@ -1599,6 +1698,55 @@ export default function TodoApp({ userId }: TodoAppProps) {
           </div>
         </form>
       </section>
+
+      <section aria-label="Todo backup" className="mt-4 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={() => void exportTodos('json')}
+          className="rounded bg-green-700 px-3 py-2 text-sm font-medium text-white"
+        >
+          Export JSON
+        </button>
+        <button
+          type="button"
+          onClick={() => void exportTodos('csv')}
+          className="rounded bg-green-900 px-3 py-2 text-sm font-medium text-white"
+        >
+          Export CSV
+        </button>
+        <button
+          type="button"
+          onClick={() => importFileRef.current?.click()}
+          disabled={importing}
+          className="rounded bg-blue-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
+        >
+          {importing ? 'Importing…' : 'Import JSON'}
+        </button>
+        <input
+          ref={importFileRef}
+          aria-label="Import JSON file"
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          disabled={importing}
+          onChange={importTodos}
+        />
+        <span className="text-xs text-gray-600">Imports add todos; they do not merge existing ones.</span>
+      </section>
+      {transferMessage && (
+        <p
+          role={transferMessage.type === 'error' ? 'alert' : 'status'}
+          className={`mt-3 rounded border p-3 text-sm ${
+            transferMessage.type === 'success'
+              ? 'border-green-300 bg-green-50 text-green-800'
+              : transferMessage.type === 'info'
+                ? 'border-blue-300 bg-blue-50 text-blue-800'
+                : 'border-red-300 bg-red-50 text-red-800'
+          }`}
+        >
+          {transferMessage.text}
+        </p>
+      )}
 
       {error && (
         <p role="alert" className="mt-4 rounded border border-red-300 bg-red-50 p-3 text-red-800">

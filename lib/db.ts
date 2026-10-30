@@ -34,6 +34,24 @@ export interface Todo {
   tags?: Tag[];
 }
 
+export interface TodoExportItem
+  extends Omit<Todo, 'id' | 'user_id' | 'updated_at' | 'last_notification_sent' | 'subtasks' | 'tags'> {
+  subtasks: Array<Pick<Subtask, 'title' | 'completed' | 'position'>>;
+  tags: Array<Pick<Tag, 'name' | 'color'>>;
+}
+
+export interface TodoExport {
+  version: 1;
+  exported_at: string;
+  todos: TodoExportItem[];
+}
+
+export interface ImportResult {
+  imported: number;
+  tagsCreated: number;
+  tagsReused: number;
+}
+
 export interface Subtask {
   id: number;
   todo_id: number;
@@ -686,6 +704,69 @@ function createAuthDatabase(connection: Database.Database) {
         connection.prepare('DELETE FROM todos WHERE id = ? AND user_id = ?').run(id, userId)
           .changes === 1
       );
+    },
+    importAll(userId: number, items: TodoExportItem[]): ImportResult {
+      const transaction = connection.transaction((importItems: TodoExportItem[]) => {
+        let tagsCreated = 0;
+        let tagsReused = 0;
+        const insertTodo = connection.prepare(
+          `INSERT INTO todos
+            (user_id, title, completed, due_date, priority, is_recurring,
+             recurrence_pattern, reminder_minutes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        );
+        const insertSubtask = connection.prepare(
+          `INSERT INTO subtasks (todo_id, title, completed, position)
+           VALUES (?, ?, ?, ?)`,
+        );
+        const existingTag = connection.prepare(
+          'SELECT id FROM tags WHERE user_id = ? AND name = ? COLLATE NOCASE LIMIT 1',
+        );
+        const insertTag = connection.prepare(
+          'INSERT INTO tags (user_id, name, color) VALUES (?, ?, ?)',
+        );
+        const linkTag = connection.prepare(
+          'INSERT INTO todo_tags (todo_id, tag_id) VALUES (?, ?) ON CONFLICT(todo_id, tag_id) DO NOTHING',
+        );
+
+        for (const item of importItems) {
+          const result = insertTodo.run(
+            userId,
+            item.title.trim(),
+            Number(item.completed),
+            item.due_date,
+            item.priority,
+            Number(item.is_recurring),
+            item.recurrence_pattern,
+            item.reminder_minutes,
+            item.created_at,
+          );
+          const todoId = Number(result.lastInsertRowid);
+
+          item.subtasks.forEach((subtask, position) => {
+            insertSubtask.run(todoId, subtask.title.trim(), Number(subtask.completed), position);
+          });
+
+          for (const importedTag of item.tags) {
+            const name = importedTag.name.trim();
+            const match = existingTag.get(userId, name) as { id: number } | undefined;
+            let tagId: number;
+            if (match) {
+              tagsReused += 1;
+              tagId = match.id;
+            } else {
+              const inserted = insertTag.run(userId, name, importedTag.color);
+              tagsCreated += 1;
+              tagId = Number(inserted.lastInsertRowid);
+            }
+            linkTag.run(todoId, tagId);
+          }
+        }
+
+        return { imported: importItems.length, tagsCreated, tagsReused };
+      });
+
+      return transaction(items);
     },
   };
 

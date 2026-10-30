@@ -1,0 +1,2 @@
+export const MAX_IMPORT_BODY_BYTES = 25 * 1024 * 1024;
+export const LARGE_IMPORT_WARNING_BYTES = 10 * 1024 * 1024;
