@@ -36,6 +36,16 @@ export interface Subtask {
   title: string;
   completed: boolean;
   position: number;
+  created_at: string;
+}
+
+export interface CreateSubtaskDto {
+  title: string;
+}
+
+export interface UpdateSubtaskDto {
+  title?: string;
+  completed?: boolean;
 }
 
 export interface Tag {
@@ -111,6 +121,11 @@ function toTodo(row: Todo | undefined): Todo | null {
   };
 }
 
+function toSubtask(row: Subtask | undefined): Subtask | null {
+  if (!row) return null;
+  return { ...row, completed: Boolean(row.completed) };
+}
+
 export function createDatabase(filename: string): ReturnType<typeof createAuthDatabase> {
   return createAuthDatabase(new Database(filename));
 }
@@ -176,6 +191,16 @@ function createAuthDatabase(connection: Database.Database) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_holidays_date ON holidays(date);
+
+    CREATE TABLE IF NOT EXISTS subtasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      completed INTEGER NOT NULL DEFAULT 0,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_subtasks_todo_id ON subtasks(todo_id);
   `);
   const todoColumns = connection.pragma('table_info(todos)') as Array<{ name: string }>;
   if (!todoColumns.some((column) => column.name === 'next_occurrence_created')) {
@@ -244,8 +269,37 @@ function createAuthDatabase(connection: Database.Database) {
   function hydrateTodo(row: Todo | undefined, userId: number): Todo | null {
     const todo = toTodo(row);
     if (!todo) return null;
-    return { ...todo, tags: getTodoTags(todo.id, userId) };
+    return {
+      ...todo,
+      tags: getTodoTags(todo.id, userId),
+      subtasks: (subtasksByTodo.all(todo.id) as Subtask[]).map((row) => toSubtask(row)!),
+    };
   }
+  const subtasksByTodo = connection.prepare(
+    'SELECT * FROM subtasks WHERE todo_id = ? ORDER BY position ASC, id ASC',
+  );
+  const subtasksByUser = connection.prepare(
+    `SELECT subtasks.* FROM subtasks
+     INNER JOIN todos ON todos.id = subtasks.todo_id
+     WHERE todos.user_id = ?
+     ORDER BY subtasks.todo_id, subtasks.position ASC, subtasks.id ASC`,
+  );
+  const subtaskByIdForUser = connection.prepare(
+    `SELECT subtasks.* FROM subtasks
+     INNER JOIN todos ON todos.id = subtasks.todo_id
+     WHERE subtasks.id = ? AND todos.user_id = ?`,
+  );
+  const createSubtaskTransaction = connection.transaction((todoId: number, title: string) => {
+    const nextPosition = connection
+      .prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM subtasks WHERE todo_id = ?')
+      .get(todoId) as { position: number };
+    const result = connection
+      .prepare('INSERT INTO subtasks (todo_id, title, position) VALUES (?, ?, ?)')
+      .run(todoId, title, nextPosition.position);
+    return connection.prepare('SELECT * FROM subtasks WHERE id = ?').get(result.lastInsertRowid) as
+      | Subtask
+      | undefined;
+  });
 
   const userDB = {
     findByUsername(username: string): User | null {
@@ -404,7 +458,19 @@ function createAuthDatabase(connection: Database.Database) {
 
   const todoDB = {
     findAllByUser(userId: number): Todo[] {
-      return (todosByUser.all(userId) as Todo[]).map((row) => hydrateTodo(row, userId)!);
+      const todos = (todosByUser.all(userId) as Todo[]).map((row) => toTodo(row)!);
+      const subtasks = (subtasksByUser.all(userId) as Subtask[]).map((row) => toSubtask(row)!);
+      const subtasksByTodoId = new Map<number, Subtask[]>();
+      for (const subtask of subtasks) {
+        const current = subtasksByTodoId.get(subtask.todo_id) ?? [];
+        current.push(subtask);
+        subtasksByTodoId.set(subtask.todo_id, current);
+      }
+      return todos.map((todo) => ({
+        ...todo,
+        tags: getTodoTags(todo.id, userId),
+        subtasks: subtasksByTodoId.get(todo.id) ?? [],
+      }));
     },
     findById(id: number, userId: number): Todo | null {
       return hydrateTodo(todoById.get(id, userId) as Todo | undefined, userId);
@@ -548,6 +614,52 @@ function createAuthDatabase(connection: Database.Database) {
     },
   };
 
+  const subtaskDB = {
+    findByTodoId(todoId: number): Subtask[] {
+      return (subtasksByTodo.all(todoId) as Subtask[]).map((row) => toSubtask(row)!);
+    },
+    findById(id: number, userId: number): Subtask | null {
+      return toSubtask(subtaskByIdForUser.get(id, userId) as Subtask | undefined);
+    },
+    create(todoId: number, input: CreateSubtaskDto): Subtask {
+      const row = createSubtaskTransaction(todoId, input.title.trim());
+      if (!row) throw new Error('Created subtask could not be loaded');
+      return toSubtask(row)!;
+    },
+    update(id: number, userId: number, input: UpdateSubtaskDto): Subtask | null {
+      const assignments: string[] = [];
+      const values: (string | number)[] = [];
+
+      if (input.title !== undefined) {
+        assignments.push('title = ?');
+        values.push(input.title.trim());
+      }
+      if (input.completed !== undefined) {
+        assignments.push('completed = ?');
+        values.push(Number(input.completed));
+      }
+      if (assignments.length === 0) return this.findById(id, userId);
+
+      connection
+        .prepare(
+          `UPDATE subtasks SET ${assignments.join(', ')}
+           WHERE id = ? AND todo_id IN (SELECT id FROM todos WHERE user_id = ?)`,
+        )
+        .run(...values, id, userId);
+      return this.findById(id, userId);
+    },
+    delete(id: number, userId: number): boolean {
+      return (
+        connection
+          .prepare(
+            `DELETE FROM subtasks
+             WHERE id = ? AND todo_id IN (SELECT id FROM todos WHERE user_id = ?)`,
+          )
+          .run(id, userId).changes === 1
+      );
+    },
+  };
+
   const createUserWithAuthenticator = connection.transaction(
     (username: string, authenticator: Omit<NewAuthenticator, 'user_id'>) => {
       const user = userDB.create(username);
@@ -566,6 +678,7 @@ function createAuthDatabase(connection: Database.Database) {
     tagDB,
     todoDB,
     holidayDB,
+    subtaskDB,
     createUserWithAuthenticator,
     challengeStore: createChallengeStore(connection),
     close(): void {
@@ -582,5 +695,6 @@ export const authenticatorDB = database.authenticatorDB;
 export const tagDB = database.tagDB;
 export const todoDB = database.todoDB;
 export const holidayDB = database.holidayDB;
+export const subtaskDB = database.subtaskDB;
 export const createUserWithAuthenticator = database.createUserWithAuthenticator;
 export const challengeStore = database.challengeStore;

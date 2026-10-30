@@ -62,6 +62,11 @@ test('manages tags, assigns multiple tags, filters todos, and deletes tags', asy
   await page.getByRole('button', { name: 'Filter by tag Office' }).click();
   await expect(page.getByLabel('Filter by tags')).toHaveValue(officeOptionId!);
 
+  await page.getByRole('button', { name: 'Show subtasks for Tagged proposal' }).click();
+  await page.getByLabel('Add a subtask to Tagged proposal').fill('Review tagged proposal');
+  await page.getByLabel('Add a subtask to Tagged proposal').press('Enter');
+  await expect(page.getByLabel('Add a subtask to Tagged proposal')).toHaveValue('');
+  await expect(page.getByText('0/1 subtasks')).toBeVisible();
   await page.getByRole('button', { name: 'Edit' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Toggle tag Home' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Update' }).click();
@@ -69,8 +74,16 @@ test('manages tags, assigns multiple tags, filters todos, and deletes tags', asy
   const savedTodos = (await (await page.request.get('/api/todos')).json()) as Array<{
     title: string;
     tags: Array<{ name: string }>;
+    subtasks: Array<{ title: string; completed: boolean }>;
   }>;
   expect(savedTodos[0].tags.map((tag) => tag.name)).toEqual(['Office']);
+  expect(savedTodos[0].subtasks).toEqual([
+    expect.objectContaining({ title: 'Review tagged proposal', completed: false }),
+  ]);
+  await expect(page.getByText('0/1 subtasks')).toBeVisible();
+  await page.getByLabel('Mark subtask "Review tagged proposal" as complete').check();
+  await expect(page.getByText('1/1 subtasks')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Filter by tag Office' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Manage Tags' }).click();
   const renameDialog = page.getByRole('dialog', { name: 'Manage Tags' });
@@ -82,9 +95,9 @@ test('manages tags, assigns multiple tags, filters todos, and deletes tags', asy
   await expect(page.getByRole('button', { name: 'Filter by tag Projects' })).toBeVisible();
 
   await page.getByLabel('Filter by tags').selectOption({ label: 'Projects' });
-  await expect(page.getByText('Tagged proposal')).toBeVisible();
+  await expect(page.getByText('Tagged proposal', { exact: true })).toBeVisible();
   await page.getByLabel('Filter by priority').selectOption('high');
-  await expect(page.getByText('Tagged proposal')).not.toBeVisible();
+  await expect(page.getByText('Tagged proposal', { exact: true })).not.toBeVisible();
   await page.getByLabel('Filter by priority').selectOption('all');
 
   await page.getByRole('button', { name: 'Toggle tag Projects' }).click();

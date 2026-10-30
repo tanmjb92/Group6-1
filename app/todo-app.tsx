@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type {
   CreateTagInput,
   Priority,
   RecurrencePattern,
+  Subtask,
   Tag,
   Todo,
   UpdateTagInput,
@@ -12,6 +13,8 @@ import type {
 } from '@/lib/db';
 import { buildTodoEditUpdate, type TodoEditDraft } from '@/lib/todo-input';
 import { ManageTagsModal, TagPill, TagSelector } from './tag-ui';
+import { SUBTASK_TITLE_MAX_LENGTH } from '@/lib/subtask-constants';
+import { calculateProgress } from '@/lib/subtask-progress';
 import {
   fromSingaporeDateTimeLocal,
   formatSingaporeDate,
@@ -23,6 +26,7 @@ import { sectionTodos } from '@/lib/todo-sort';
 type TodoAppProps = { userId: number };
 type PriorityFilter = Priority | 'all';
 let nextOptimisticTodoId = 0;
+let nextOptimisticSubtaskId = 0;
 
 function localDateMinimum(): string {
   return getSingaporeDateTimeLocal(new Date(getSingaporeNow().getTime() + 60_000));
@@ -74,20 +78,67 @@ function TodoRow({
   onEdit,
   onDelete,
   onTagFilter,
+  onAddSubtask,
+  onToggleSubtask,
+  onDeleteSubtask,
+  todoUpdating,
 }: {
   todo: Todo;
-  onToggle: (todo: Todo, completed: boolean) => void;
+  onToggle: (todo: Todo, completed: boolean) => Promise<boolean>;
   onEdit: (todo: Todo) => void;
   onDelete: (todo: Todo) => void;
   onTagFilter: (tag: Tag) => void;
+  onAddSubtask: (todoId: number, title: string) => Promise<boolean>;
+  onToggleSubtask: (todo: Todo, subtask: Subtask, completed: boolean) => Promise<boolean>;
+  onDeleteSubtask: (todo: Todo, subtask: Subtask) => Promise<boolean>;
+  todoUpdating: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState('');
+  const [addingSubtask, setAddingSubtask] = useState(false);
+  const [pendingSubtaskIds, setPendingSubtaskIds] = useState<Set<number>>(() => new Set());
+  const subtasks = todo.subtasks ?? [];
+  const progress = calculateProgress(subtasks);
+
+  async function addSubtask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedTitle = newSubtaskTitle.trim();
+    if (!trimmedTitle || addingSubtask || todo.id < 0) return;
+
+    setAddingSubtask(true);
+    const added = await onAddSubtask(todo.id, trimmedTitle);
+    setAddingSubtask(false);
+    if (added) setNewSubtaskTitle('');
+  }
+
+  async function toggleSubtask(subtask: Subtask, completed: boolean) {
+    setPendingSubtaskIds((current) => new Set(current).add(subtask.id));
+    await onToggleSubtask(todo, subtask, completed);
+    setPendingSubtaskIds((current) => {
+      const next = new Set(current);
+      next.delete(subtask.id);
+      return next;
+    });
+  }
+
+  async function deleteSubtask(subtask: Subtask) {
+    setPendingSubtaskIds((current) => new Set(current).add(subtask.id));
+    await onDeleteSubtask(todo, subtask);
+    setPendingSubtaskIds((current) => {
+      const next = new Set(current);
+      next.delete(subtask.id);
+      return next;
+    });
+  }
+
   return (
     <li className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
       <div className="flex min-w-0 items-start gap-3">
         <input
           type="checkbox"
           checked={todo.completed}
-          onChange={(event) => onToggle(todo, event.target.checked)}
+          disabled={todoUpdating}
+          onChange={(event) => void onToggle(todo, event.target.checked)}
           className="mt-1 h-5 w-5 shrink-0"
           aria-label={`Mark "${todo.title}" as ${todo.completed ? 'incomplete' : 'complete'}`}
         />
@@ -119,12 +170,99 @@ function TodoRow({
         </div>
       </div>
       <div className="flex gap-4 text-sm">
-        <button type="button" onClick={() => onEdit(todo)} className="text-blue-700 underline">
+        <button type="button" disabled={todoUpdating} onClick={() => onEdit(todo)} className="text-blue-700 underline disabled:opacity-50">
           Edit
         </button>
-        <button type="button" onClick={() => onDelete(todo)} className="text-red-700 underline">
+        <button type="button" disabled={todoUpdating} onClick={() => onDelete(todo)} className="text-red-700 underline disabled:opacity-50">
           Delete
         </button>
+      </div>
+      <div className="w-full border-t border-gray-100 pt-3">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={`subtasks-${todo.id}`}
+          aria-label={`${expanded ? 'Hide' : 'Show'} subtasks for ${todo.title}`}
+          onClick={() => setExpanded((current) => !current)}
+          className="text-sm font-medium text-gray-700 underline"
+        >
+          {expanded ? 'Hide subtasks' : 'Subtasks'} ({subtasks.length})
+        </button>
+
+        {progress.total > 0 && (
+          <div className="mt-2" aria-label={`Subtask progress for ${todo.title}`}>
+            <div className="mb-1 flex justify-between text-xs text-gray-600">
+              <span>{progress.completed}/{progress.total} subtasks</span>
+              <span>{progress.percent}%</span>
+            </div>
+            <div
+              role="progressbar"
+              aria-label={`Subtask completion for ${todo.title}`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progress.percent}
+              className="h-2 overflow-hidden rounded-full bg-gray-200"
+            >
+              <div
+                className={`h-full transition-[width] duration-200 ${progress.percent === 100 ? 'bg-green-600' : 'bg-blue-600'}`}
+                style={{ width: `${progress.percent}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {expanded && (
+          <div id={`subtasks-${todo.id}`} className="mt-3 space-y-2 pl-1">
+            {subtasks.length > 0 && (
+              <ul aria-label={`Subtasks for ${todo.title}`} className="space-y-2">
+                {subtasks.map((subtask) => (
+                  <li key={subtask.id} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={subtask.completed}
+                      disabled={subtask.id < 0 || pendingSubtaskIds.has(subtask.id)}
+                      aria-label={`Mark subtask "${subtask.title}" as ${subtask.completed ? 'incomplete' : 'complete'}`}
+                      onChange={(event) => void toggleSubtask(subtask, event.target.checked)}
+                    />
+                    <span className={`min-w-0 flex-1 break-words text-sm ${subtask.completed ? 'text-gray-500 line-through' : 'text-gray-800'}`}>
+                      {subtask.title}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={todo.id < 0 || pendingSubtaskIds.has(subtask.id)}
+                      aria-label={`Delete subtask ${subtask.title}`}
+                      onClick={() => void deleteSubtask(subtask)}
+                      className="rounded border px-2 py-1 text-sm text-red-700 disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <form onSubmit={addSubtask} className="flex gap-2">
+              <label className="sr-only" htmlFor={`new-subtask-${todo.id}`}>
+                Add a subtask to {todo.title}
+              </label>
+              <input
+                id={`new-subtask-${todo.id}`}
+                maxLength={SUBTASK_TITLE_MAX_LENGTH}
+                value={newSubtaskTitle}
+                disabled={todo.id < 0 || addingSubtask}
+                onChange={(event) => setNewSubtaskTitle(event.target.value)}
+                placeholder="Add a subtask"
+                className="min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100"
+              />
+              <button
+                type="submit"
+                disabled={todo.id < 0 || addingSubtask || !newSubtaskTitle.trim()}
+                className="rounded bg-blue-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {addingSubtask ? 'Adding…' : 'Add'}
+              </button>
+            </form>
+          </div>
+        )}
       </div>
     </li>
   );
@@ -137,13 +275,21 @@ function TodoSection({
   onEdit,
   onDelete,
   onTagFilter,
+  onAddSubtask,
+  onToggleSubtask,
+  onDeleteSubtask,
+  pendingTodoIds,
 }: {
   title: string;
   todos: Todo[];
-  onToggle: (todo: Todo, completed: boolean) => void;
+  onToggle: (todo: Todo, completed: boolean) => Promise<boolean>;
   onEdit: (todo: Todo) => void;
   onDelete: (todo: Todo) => void;
   onTagFilter: (tag: Tag) => void;
+  onAddSubtask: (todoId: number, title: string) => Promise<boolean>;
+  onToggleSubtask: (todo: Todo, subtask: Subtask, completed: boolean) => Promise<boolean>;
+  onDeleteSubtask: (todo: Todo, subtask: Subtask) => Promise<boolean>;
+  pendingTodoIds: Set<number>;
 }) {
   const sectionStyle =
     title === 'Overdue'
@@ -167,6 +313,10 @@ function TodoSection({
               onEdit={onEdit}
               onDelete={onDelete}
               onTagFilter={onTagFilter}
+              onAddSubtask={onAddSubtask}
+              onToggleSubtask={onToggleSubtask}
+              onDeleteSubtask={onDeleteSubtask}
+              todoUpdating={pendingTodoIds.has(todo.id)}
             />
           ))}
         </ul>
@@ -201,35 +351,42 @@ function TodoEditDialog({
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>(
     (todo.tags ?? []).map((tag) => tag.id),
   );
+  const savingRef = useRef(false);
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onCancel();
+      if (event.key === 'Escape' && !saving) onCancel();
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [onCancel]);
+  }, [onCancel, saving]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
-    const saved = await onSave(todo.id, {
-      title,
-      due_date: dueDate,
-      priority,
-      is_recurring: isRecurring,
-      recurrence_pattern: recurrencePattern,
-      tag_ids: selectedTagIds,
-    });
-    setSaving(false);
-    if (saved) onCancel();
+    try {
+      const saved = await onSave(todo.id, {
+        title,
+        due_date: dueDate,
+        priority,
+        is_recurring: isRecurring,
+        recurrence_pattern: recurrencePattern,
+        tag_ids: selectedTagIds,
+      });
+      if (saved) onCancel();
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
   }
 
   return (
     <div
       className="fixed inset-0 z-10 flex items-center justify-center bg-black/40 p-4"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onCancel();
+        if (!saving && event.target === event.currentTarget) onCancel();
       }}
     >
       <form
@@ -314,7 +471,7 @@ function TodoEditDialog({
           </select>
         </label>
         <div className="flex justify-end gap-3">
-          <button type="button" onClick={onCancel} className="rounded border px-4 py-2">
+          <button type="button" disabled={saving} onClick={onCancel} className="rounded border px-4 py-2 disabled:opacity-50">
             Cancel
           </button>
           <button type="submit" disabled={saving} className="rounded bg-blue-700 px-4 py-2 text-white disabled:opacity-60">
@@ -328,6 +485,8 @@ function TodoEditDialog({
 
 export default function TodoApp({ userId }: TodoAppProps) {
   const [todos, setTodos] = useState<Todo[]>([]);
+  const [pendingTodoIds, setPendingTodoIds] = useState<Set<number>>(() => new Set());
+  const pendingTodoIdsRef = useRef(new Set<number>());
   const [title, setTitle] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [priority, setPriority] = useState<Priority>('medium');
@@ -454,8 +613,11 @@ export default function TodoApp({ userId }: TodoAppProps) {
 
   async function updateTodo(id: number, changes: UpdateTodoInput): Promise<boolean> {
     setError(null);
+    if (pendingTodoIdsRef.current.has(id)) return false;
     const previous = todos.find((todo) => todo.id === id);
     if (!previous) return false;
+    pendingTodoIdsRef.current.add(id);
+    setPendingTodoIds((current) => new Set(current).add(id));
     setTodos((current) =>
       current.map((todo) => (todo.id === id ? { ...todo, ...changes } : todo)),
     );
@@ -470,7 +632,11 @@ export default function TodoApp({ userId }: TodoAppProps) {
       const responseTodo = (await response.json()) as Todo & { nextInstance?: Todo };
       const { nextInstance, ...updated } = responseTodo;
       setTodos((current) => {
-        const updatedTodos = current.map((todo) => (todo.id === id ? updated : todo));
+        const updatedTodos = current.map((todo) =>
+          todo.id === id
+            ? { ...updated, subtasks: todo.subtasks ?? updated.subtasks ?? [] }
+            : todo,
+        );
         if (!nextInstance || updatedTodos.some((todo) => todo.id === nextInstance.id)) {
           return updatedTodos;
         }
@@ -478,8 +644,173 @@ export default function TodoApp({ userId }: TodoAppProps) {
       });
       return true;
     } catch (cause) {
-      setTodos((current) => current.map((todo) => (todo.id === id ? previous : todo)));
+      setTodos((current) =>
+        current.map((todo) =>
+          todo.id === id
+            ? { ...previous, subtasks: todo.subtasks ?? previous.subtasks ?? [] }
+            : todo,
+        ),
+      );
       setError(cause instanceof Error ? cause.message : 'Failed to update todo');
+      return false;
+    } finally {
+      pendingTodoIdsRef.current.delete(id);
+      setPendingTodoIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
+  async function addTodoSubtask(todoId: number, title: string): Promise<boolean> {
+    setError(null);
+    const todo = todos.find((item) => item.id === todoId);
+    if (!todo || todoId < 1) return false;
+
+    const existingSubtasks = todo.subtasks ?? [];
+    const optimisticId = --nextOptimisticSubtaskId;
+    const optimistic: Subtask = {
+      id: optimisticId,
+      todo_id: todoId,
+      title,
+      completed: false,
+      position: existingSubtasks.reduce((maximum, item) => Math.max(maximum, item.position), -1) + 1,
+      created_at: getSingaporeNow().toISOString(),
+    };
+    setTodos((current) =>
+      current.map((item) =>
+        item.id === todoId ? { ...item, subtasks: [...(item.subtasks ?? []), optimistic] } : item,
+      ),
+    );
+
+    try {
+      const response = await fetch(`/api/todos/${todoId}/subtasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+      });
+      if (!response.ok) throw new Error(await errorMessage(response));
+      const saved = (await response.json()) as Subtask;
+      setTodos((current) =>
+        current.map((item) => {
+          if (item.id !== todoId) return item;
+          const currentSubtasks = (item.subtasks ?? []).filter(
+            (subtask) => subtask.id !== optimisticId,
+          );
+          const reconciledSubtasks = currentSubtasks.some((subtask) => subtask.id === saved.id)
+            ? currentSubtasks
+            : [...currentSubtasks, saved];
+          return {
+            ...item,
+            subtasks: reconciledSubtasks.sort(
+              (left, right) => left.position - right.position || left.id - right.id,
+            ),
+          };
+        }),
+      );
+      return true;
+    } catch (cause) {
+      setTodos((current) =>
+        current.map((item) =>
+          item.id === todoId
+            ? { ...item, subtasks: (item.subtasks ?? []).filter((subtask) => subtask.id !== optimisticId) }
+            : item,
+        ),
+      );
+      setError(cause instanceof Error ? cause.message : 'Failed to add subtask');
+      return false;
+    }
+  }
+
+  async function toggleTodoSubtask(
+    todo: Todo,
+    subtask: Subtask,
+    completed: boolean,
+  ): Promise<boolean> {
+    setError(null);
+    setTodos((current) =>
+      current.map((item) =>
+        item.id === todo.id
+          ? {
+              ...item,
+              subtasks: (item.subtasks ?? []).map((child) =>
+                child.id === subtask.id ? { ...child, completed } : child,
+              ),
+            }
+          : item,
+      ),
+    );
+
+    try {
+      const response = await fetch(`/api/subtasks/${subtask.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed }),
+      });
+      if (!response.ok) throw new Error(await errorMessage(response));
+      const updated = (await response.json()) as Subtask;
+      setTodos((current) =>
+        current.map((item) =>
+          item.id === todo.id
+            ? {
+                ...item,
+                subtasks: (item.subtasks ?? []).map((child) =>
+                  child.id === updated.id ? updated : child,
+                ),
+              }
+            : item,
+        ),
+      );
+      return true;
+    } catch (cause) {
+      setTodos((current) =>
+        current.map((item) =>
+          item.id === todo.id
+            ? {
+                ...item,
+                subtasks: (item.subtasks ?? []).map((child) =>
+                  child.id === subtask.id ? { ...child, completed: subtask.completed } : child,
+                ),
+              }
+            : item,
+        ),
+      );
+      setError(cause instanceof Error ? cause.message : 'Failed to update subtask');
+      return false;
+    }
+  }
+
+  async function deleteTodoSubtask(todo: Todo, subtask: Subtask): Promise<boolean> {
+    setError(null);
+    setTodos((current) =>
+      current.map((item) =>
+        item.id === todo.id
+          ? { ...item, subtasks: (item.subtasks ?? []).filter((child) => child.id !== subtask.id) }
+          : item,
+      ),
+    );
+
+    try {
+      const response = await fetch(`/api/subtasks/${subtask.id}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error(await errorMessage(response));
+      return true;
+    } catch (cause) {
+      setTodos((current) =>
+        current.map((item) =>
+          item.id === todo.id
+            ? {
+                ...item,
+                subtasks: (item.subtasks ?? []).some((child) => child.id === subtask.id)
+                  ? item.subtasks
+                  : [...(item.subtasks ?? []), subtask].sort(
+                      (left, right) => left.position - right.position || left.id - right.id,
+                    ),
+              }
+            : item,
+        ),
+      );
+      setError(cause instanceof Error ? cause.message : 'Failed to delete subtask');
       return false;
     }
   }
@@ -688,9 +1019,42 @@ export default function TodoApp({ userId }: TodoAppProps) {
         <p className="mt-8" role="status">Loading todos…</p>
       ) : (
         <>
-          <TodoSection title="Overdue" todos={sections.overdue} onToggle={(todo, completed) => void updateTodo(todo.id, { completed })} onEdit={setActiveEdit} onDelete={(todo) => void deleteTodo(todo)} onTagFilter={(tag) => setTagFilter(tag.id)} />
-          <TodoSection title="Pending" todos={sections.pending} onToggle={(todo, completed) => void updateTodo(todo.id, { completed })} onEdit={setActiveEdit} onDelete={(todo) => void deleteTodo(todo)} onTagFilter={(tag) => setTagFilter(tag.id)} />
-          <TodoSection title="Completed" todos={sections.completed} onToggle={(todo, completed) => void updateTodo(todo.id, { completed })} onEdit={setActiveEdit} onDelete={(todo) => void deleteTodo(todo)} onTagFilter={(tag) => setTagFilter(tag.id)} />
+          <TodoSection
+            title="Overdue"
+            onTagFilter={(tag) => setTagFilter(tag.id)}
+            todos={sections.overdue}
+            onToggle={(todo, completed) => updateTodo(todo.id, { completed })}
+            onEdit={setActiveEdit}
+            onDelete={(todo) => void deleteTodo(todo)}
+            onAddSubtask={addTodoSubtask}
+            onToggleSubtask={toggleTodoSubtask}
+            onDeleteSubtask={deleteTodoSubtask}
+            pendingTodoIds={pendingTodoIds}
+          />
+          <TodoSection
+            title="Pending"
+            onTagFilter={(tag) => setTagFilter(tag.id)}
+            todos={sections.pending}
+            onToggle={(todo, completed) => updateTodo(todo.id, { completed })}
+            onEdit={setActiveEdit}
+            onDelete={(todo) => void deleteTodo(todo)}
+            onAddSubtask={addTodoSubtask}
+            onToggleSubtask={toggleTodoSubtask}
+            onDeleteSubtask={deleteTodoSubtask}
+            pendingTodoIds={pendingTodoIds}
+          />
+          <TodoSection
+            title="Completed"
+            onTagFilter={(tag) => setTagFilter(tag.id)}
+            todos={sections.completed}
+            onToggle={(todo, completed) => updateTodo(todo.id, { completed })}
+            onEdit={setActiveEdit}
+            onDelete={(todo) => void deleteTodo(todo)}
+            onAddSubtask={addTodoSubtask}
+            onToggleSubtask={toggleTodoSubtask}
+            onDeleteSubtask={deleteTodoSubtask}
+            pendingTodoIds={pendingTodoIds}
+          />
         </>
       )}
 

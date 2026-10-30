@@ -1,0 +1,1 @@
+export const SUBTASK_TITLE_MAX_LENGTH = 200;
