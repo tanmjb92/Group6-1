@@ -214,8 +214,10 @@ configuration must match the address used in the browser. Do not commit
 `.env.local`; production must use HTTPS and a strong, independently generated
 `SESSION_SECRET`.
 
-The current app foundation implements Feature 11 (WebAuthn authentication).
-Other todo features described in the PRPs remain to be implemented.
+The application currently implements Feature 11 (WebAuthn authentication) and
+Feature 01 (todo CRUD, Singapore-timezone due dates, priorities, and
+Overdue/Pending/Completed sections). Other advanced features described in the
+PRPs remain to be implemented.
 
 ### Project Structure Verification
 Ensure you have these key files:
@@ -227,12 +229,16 @@ todo-app/
 │       └── todo-app-core-features.md  ← Product requirements
 ├── app/
 │   ├── page.tsx
+│   ├── todo-app.tsx
 │   ├── layout.tsx
 │   └── api/
+│       ├── auth/
+│       └── todos/
 ├── lib/
 │   ├── db.ts
 │   ├── auth.ts
-│   └── timezone.ts
+│   ├── timezone.ts
+│   └── todo-sort.ts
 ├── package.json
 ├── next.config.ts
 └── README.md

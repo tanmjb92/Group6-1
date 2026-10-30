@@ -77,3 +77,95 @@ describe('authentication database', () => {
     expect(activeDatabase.userDB.findByUsername('bob')).toBeNull();
   });
 });
+
+describe('todo database', () => {
+  let database: ReturnType<typeof createDatabase> | undefined;
+
+  afterEach(() => {
+    database?.close();
+    database = undefined;
+  });
+
+  it('creates todos with defaults and scopes reads by user', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('todo-owner');
+    const otherUser = database.userDB.create('other-owner');
+    const todo = database.todoDB.create(user.id, { title: '  Buy milk  ' });
+
+    expect(todo).toMatchObject({
+      user_id: user.id,
+      title: 'Buy milk',
+      completed: false,
+      due_date: null,
+      priority: 'medium',
+      is_recurring: false,
+      recurrence_pattern: null,
+      reminder_minutes: null,
+      last_notification_sent: null,
+      updated_at: null,
+    });
+    expect(database.todoDB.findAllByUser(user.id)).toEqual([todo]);
+    expect(database.todoDB.findAllByUser(otherUser.id)).toEqual([]);
+    expect(database.todoDB.findById(todo.id, otherUser.id)).toBeNull();
+  });
+
+  it('updates only supplied fields and refreshes updated_at', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('todo-owner');
+    const todo = database.todoDB.create(user.id, { title: 'Original' });
+    const updated = database.todoDB.update(todo.id, user.id, {
+      title: 'Renamed',
+      completed: true,
+    });
+
+    expect(updated).toMatchObject({
+      id: todo.id,
+      user_id: user.id,
+      title: 'Renamed',
+      completed: true,
+    });
+    expect(updated?.updated_at).toBeTruthy();
+    expect(database.todoDB.update(todo.id, user.id + 1, { title: 'Unauthorized' })).toBeNull();
+    expect(database.todoDB.findById(todo.id, user.id)?.title).toBe('Renamed');
+  });
+
+  it('deletes only an owned todo and cascades to dependent rows', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('todo-owner');
+    const otherUser = database.userDB.create('other-owner');
+    const todo = database.todoDB.create(user.id, { title: 'Delete me' });
+    database.connection.exec(`
+      CREATE TABLE subtasks (
+        id INTEGER PRIMARY KEY,
+        todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE
+      );
+      CREATE TABLE tags (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE TABLE todo_tags (
+        todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+        tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE
+      );
+    `);
+    database.connection.prepare('INSERT INTO subtasks (todo_id) VALUES (?)').run(todo.id);
+    const tagId = Number(
+      database.connection.prepare('INSERT INTO tags (user_id) VALUES (?)').run(user.id)
+        .lastInsertRowid,
+    );
+    database.connection
+      .prepare('INSERT INTO todo_tags (todo_id, tag_id) VALUES (?, ?)')
+      .run(todo.id, tagId);
+
+    expect(database.todoDB.delete(todo.id, otherUser.id)).toBe(false);
+    expect(database.todoDB.delete(todo.id, user.id)).toBe(true);
+    expect(database.todoDB.findById(todo.id, user.id)).toBeNull();
+    expect(database.connection.prepare('SELECT COUNT(*) AS count FROM subtasks').get()).toEqual({
+      count: 0,
+    });
+    expect(database.connection.prepare('SELECT COUNT(*) AS count FROM todo_tags').get()).toEqual({
+      count: 0,
+    });
+  });
+
+});

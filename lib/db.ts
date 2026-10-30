@@ -1,5 +1,54 @@
 import Database from 'better-sqlite3';
 import { createChallengeStore } from './auth/challenge-store';
+import { getSingaporeNow } from './timezone';
+
+export type Priority = 'high' | 'medium' | 'low';
+export type RecurrencePattern = 'daily' | 'weekly' | 'monthly' | 'yearly';
+
+export interface Todo {
+  id: number;
+  user_id: number;
+  title: string;
+  completed: boolean;
+  due_date: string | null;
+  priority: Priority;
+  is_recurring: boolean;
+  recurrence_pattern: RecurrencePattern | null;
+  reminder_minutes: number | null;
+  last_notification_sent: string | null;
+  created_at: string;
+  updated_at: string | null;
+  subtasks?: Subtask[];
+  tags?: Tag[];
+}
+
+export interface Subtask {
+  id: number;
+  todo_id: number;
+  title: string;
+  completed: boolean;
+  position: number;
+}
+
+export interface Tag {
+  id: number;
+  user_id: number;
+  name: string;
+  color: string;
+}
+
+export interface CreateTodoInput {
+  title: string;
+  due_date?: string | null;
+  priority?: Priority;
+}
+
+export interface UpdateTodoInput {
+  title?: string;
+  due_date?: string | null;
+  priority?: Priority;
+  completed?: boolean;
+}
 
 export interface User {
   id: number;
@@ -27,6 +76,15 @@ function toUser(row: User | undefined): User | null {
   return row ?? null;
 }
 
+function toTodo(row: Todo | undefined): Todo | null {
+  if (!row) return null;
+  return {
+    ...row,
+    completed: Boolean(row.completed),
+    is_recurring: Boolean(row.is_recurring),
+  };
+}
+
 export function createDatabase(filename: string): ReturnType<typeof createAuthDatabase> {
   return createAuthDatabase(new Database(filename));
 }
@@ -49,6 +107,23 @@ function createAuthDatabase(connection: Database.Database) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_authenticators_user_id ON authenticators(user_id);
+
+    CREATE TABLE IF NOT EXISTS todos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      completed INTEGER NOT NULL DEFAULT 0,
+      due_date TEXT,
+      priority TEXT NOT NULL DEFAULT 'medium',
+      is_recurring INTEGER NOT NULL DEFAULT 0,
+      recurrence_pattern TEXT,
+      reminder_minutes INTEGER,
+      last_notification_sent TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_todos_user_id ON todos(user_id);
+    CREATE INDEX IF NOT EXISTS idx_todos_due_date ON todos(due_date);
   `);
 
   const userByUsername = connection.prepare(
@@ -64,6 +139,10 @@ function createAuthDatabase(connection: Database.Database) {
   const authenticatorsByUser = connection.prepare(
     `SELECT id, user_id, credential_id, credential_public_key, counter, created_at
      FROM authenticators WHERE user_id = ?`,
+  );
+  const todoById = connection.prepare('SELECT * FROM todos WHERE id = ? AND user_id = ?');
+  const todosByUser = connection.prepare(
+    'SELECT * FROM todos WHERE user_id = ? ORDER BY created_at DESC, id DESC',
   );
 
   const userDB = {
@@ -135,6 +214,67 @@ function createAuthDatabase(connection: Database.Database) {
     },
   };
 
+  const todoDB = {
+    findAllByUser(userId: number): Todo[] {
+      return (todosByUser.all(userId) as Todo[]).map((row) => toTodo(row)!);
+    },
+    findById(id: number, userId: number): Todo | null {
+      return toTodo(todoById.get(id, userId) as Todo | undefined);
+    },
+    create(userId: number, input: CreateTodoInput): Todo {
+      const result = connection
+        .prepare(
+          `INSERT INTO todos (user_id, title, due_date, priority, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(
+          userId,
+          input.title.trim(),
+          input.due_date ?? null,
+          input.priority ?? 'medium',
+          getSingaporeNow().toISOString(),
+        );
+      const todo = this.findById(Number(result.lastInsertRowid), userId);
+      if (!todo) throw new Error('Created todo could not be loaded');
+      return todo;
+    },
+    update(id: number, userId: number, input: UpdateTodoInput): Todo | null {
+      const assignments: string[] = [];
+      const values: (string | number | null)[] = [];
+
+      if (input.title !== undefined) {
+        assignments.push('title = ?');
+        values.push(input.title.trim());
+      }
+      if (input.due_date !== undefined) {
+        assignments.push('due_date = ?');
+        values.push(input.due_date);
+      }
+      if (input.priority !== undefined) {
+        assignments.push('priority = ?');
+        values.push(input.priority);
+      }
+      if (input.completed !== undefined) {
+        assignments.push('completed = ?');
+        values.push(Number(input.completed));
+      }
+      if (assignments.length === 0) return this.findById(id, userId);
+
+      assignments.push('updated_at = ?');
+      values.push(getSingaporeNow().toISOString(), id, userId);
+      connection
+        .prepare(`UPDATE todos SET ${assignments.join(', ')} WHERE id = ? AND user_id = ?`)
+        .run(...values);
+      return this.findById(id, userId);
+    },
+    delete(id: number, userId: number): boolean {
+      return (
+        connection.prepare('DELETE FROM todos WHERE id = ? AND user_id = ?').run(id, userId)
+          .changes === 1
+      );
+    },
+  };
+
   const createUserWithAuthenticator = connection.transaction(
     (username: string, authenticator: Omit<NewAuthenticator, 'user_id'>) => {
       const user = userDB.create(username);
@@ -150,6 +290,7 @@ function createAuthDatabase(connection: Database.Database) {
     connection,
     userDB,
     authenticatorDB,
+    todoDB,
     createUserWithAuthenticator,
     challengeStore: createChallengeStore(connection),
     close(): void {
@@ -163,5 +304,6 @@ const database = createDatabase(process.env.DATABASE_PATH ?? 'todos.db');
 export const db = database.connection;
 export const userDB = database.userDB;
 export const authenticatorDB = database.authenticatorDB;
+export const todoDB = database.todoDB;
 export const createUserWithAuthenticator = database.createUserWithAuthenticator;
 export const challengeStore = database.challengeStore;

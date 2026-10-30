@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import AddPasskeyButton from './add-passkey-button';
 import LogoutButton from './logout-button';
+import TodoApp from './todo-app';
 import { getSession } from '@/lib/auth';
 
 export default async function HomePage() {
@@ -17,6 +18,7 @@ export default async function HomePage() {
         </div>
         <LogoutButton />
       </header>
+      <TodoApp userId={session.userId} />
       <section className="mt-10 rounded-xl bg-white p-6 shadow">
         <h2 className="text-xl font-medium">Passkey security</h2>
         <p className="mt-2 text-gray-600">
