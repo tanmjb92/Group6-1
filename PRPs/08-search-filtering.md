@@ -1,5 +1,13 @@
 # Search & Filtering
 
+> Implemented in `app/todo-app.tsx`, `lib/filters.ts`, `lib/hooks/useDebounce.ts`,
+> and `lib/filter-presets.ts`. Browser tests live in
+> `tests/e2e/search-filtering.spec.ts`. Date filters use inclusive Singapore
+> calendar-day bounds rather than slicing UTC timestamps. Preset storage is
+> validated; corrupt data yields an empty preset list plus logging and a visible
+> error, and failed writes surface an error. Applying a preset with a deleted
+> tag uses All Tags with a notice. Search excludes tag and template names.
+
 Client-side search and multi-criteria filtering over the todo list, with savable filter presets.
 
 **Dependencies**: This is a **client-side, in-memory** feature layered on top of the `todos` list already fetched via [PRP 01: Todo CRUD Operations](./01-todo-crud-operations.md)'s `GET /api/todos` (including nested subtasks from [PRP 05](./05-subtasks-progress.md), priority from [PRP 02](./02-priority-system.md), and tags from [PRP 06](./06-tag-system.md)). It does not require new database tables or server endpoints — only client-side filtering logic plus `localStorage` for saved presets.
@@ -84,7 +92,7 @@ export interface Todo {
   user_id: number;
   title: string;
   completed: boolean;
-  due_date: string | null; // ISO string, Singapore local time
+  due_date: string | null; // ISO instant; convert to Singapore date for filtering
   priority: Priority;
   // ...recurrence/reminder fields from PRP 03/04...
   subtasks?: Subtask[];
@@ -168,7 +176,7 @@ export function applyFilters(todos: Todo[], filters: FilterState): Todo[] {
   if (filters.dueDateFrom || filters.dueDateTo) {
     result = result.filter((todo) => {
       if (!todo.due_date) return false;
-      const due = todo.due_date.slice(0, 10); // 'YYYY-MM-DD'
+      const due = getSingaporeDateTimeLocal(new Date(todo.due_date)).slice(0, 10);
       if (filters.dueDateFrom && due < filters.dueDateFrom) return false;
       if (filters.dueDateTo && due > filters.dueDateTo) return false;
       return true;
@@ -178,6 +186,10 @@ export function applyFilters(todos: Todo[], filters: FilterState): Todo[] {
   return result;
 }
 ```
+
+The date conversion above uses `getSingaporeDateTimeLocal` from `lib/timezone.ts`.
+The implementation instead computes Singapore midnight bounds once per filter
+application and compares instants, avoiding repeated formatting for large lists.
 
 ### Debounced search input
 

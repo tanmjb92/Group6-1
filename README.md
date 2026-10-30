@@ -261,6 +261,13 @@ settings are copied, but browser notification delivery is not yet implemented.
 Tags are excluded by design. See [Todo Templates](USER_GUIDE.md#9-todo-templates)
 for usage.
 
+Search & Filtering is implemented entirely in the browser: 300ms-debounced
+todo/subtask title search, priority/tag/completion filters, inclusive Singapore
+due-date bounds, and named browser-local presets. Filters combine with AND logic;
+empty sections are hidden. Presets are not synced across devices and storage
+failures are reported without disrupting the todo list. Tag/template names are
+not searched. See [Search & Advanced Filtering](USER_GUIDE.md#10-search--advanced-filtering).
+
 ### Project Structure Verification
 Ensure you have these key files:
 ```

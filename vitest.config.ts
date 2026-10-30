@@ -5,7 +5,7 @@ export default defineConfig({
     environment: 'node',
     include: ['lib/**/*.test.ts'],
     coverage: {
-      include: ['lib/auth.ts', 'lib/auth/**/*.ts', 'lib/db.ts', 'lib/template-input.ts', 'lib/tag-input.ts'],
+      include: ['lib/auth.ts', 'lib/auth/**/*.ts', 'lib/db.ts', 'lib/template-input.ts', 'lib/tag-input.ts', 'lib/filters.ts', 'lib/filter-presets.ts'],
       exclude: ['**/*.test.ts'],
       thresholds: {
         branches: 80,

@@ -495,14 +495,15 @@ Powerful search and filtering system to find exactly the todos you need with mul
 - Located at top of todo list (below todo form)
 - Full-width input with search icon (🔍)
 - Placeholder: "Search todos and subtasks..."
-- Clear button (✕) appears when typing
+- **Clear search** button appears when typing
 
 #### How It Works
 - **Searches**: Todo titles AND subtask titles
-- **Real-time**: Results update as you type
+- **Debounced**: Results update after a 300ms pause; no request is sent per keystroke
 - **Case-insensitive**: Finds "meeting" or "Meeting"
 - **Partial match**: "proj" finds "project" and "projection"
-- **Clear**: Click ✕ or delete all text
+- **Clear**: Click **Clear search** or delete all text; clearing bypasses the debounce
+- Tag names and template names are not searched; use the tag dropdown for tags
 
 #### Search Behavior
 ```
@@ -543,7 +544,7 @@ Located below search bar in a horizontal row:
 #### Active Filter Actions
 Appears when ANY filter is active:
 - **"Clear All"** button (red) - Removes all filters instantly
-- **"💾 Save Filter"** button (green) - Opens save filter modal
+- **"Save Filter"** button (green) - Opens save filter modal
 
 ### Advanced Filters Panel
 
@@ -574,13 +575,16 @@ Two date inputs side-by-side:
 - Use "From" only: all todos after that date
 - Use "To" only: all todos before that date
 - Only shows todos WITH due dates
+- Both bounds are inclusive and use Singapore calendar dates, even when stored
+  timestamps fall on a different UTC date
+- If From is after To, no todos match and a hint explains the invalid range
 
 #### 3. Saved Filter Presets
 Displayed if any presets exist:
 - **Preset pills** with name
 - **Apply button**: Click name to apply
-- **Delete button**: Click ✕ to remove
-- **Format**: `[Preset Name] [✕]`
+- **Delete button**: Click **Delete** next to the name and confirm
+- **Format**: `[Preset Name] [Delete]`
 
 ### Saving Filter Presets
 
@@ -591,7 +595,7 @@ Displayed if any presets exist:
    - Tag
    - Date range
    - Completion status
-2. Click **"💾 Save Filter"** button (appears when filters active)
+2. Click **"Save Filter"** button (appears when filters active)
 3. Modal opens showing:
    - Name input field
    - Current filter preview
@@ -620,8 +624,12 @@ Current Filters:
 #### Preset Storage
 - **Location**: Browser localStorage
 - **Persistence**: Survives page refresh
-- **User-specific**: Per browser/device
-- **Format**: JSON object
+- **Scope**: This browser/site only, not account-synced or private to one login;
+  people sharing the browser profile can see the same preset names and queries
+- **Format**: Validated JSON array at `todo-app:filter-presets`
+- Invalid/blocked storage shows an error without preventing normal filtering.
+  Saving a new preset replaces malformed stored preset data.
+- Storage-full or blocked writes show an error and do not claim a save/delete succeeded
 
 ### Applying Saved Presets
 
@@ -630,6 +638,8 @@ Current Filters:
 2. Find "Saved Filter Presets" section
 3. Click preset name
 4. All filters applied instantly
+5. Every filter dimension is replaced, including resetting defaults. If a saved
+   tag was deleted, the tag dimension falls back to All Tags with a notice.
 
 #### Method 2: Quick Application
 - Presets visible when advanced panel open
@@ -640,7 +650,7 @@ Current Filters:
 
 #### Deleting Presets
 1. Locate preset in advanced panel
-2. Click ✕ button next to name
+2. Click **Delete** next to name
 3. Confirm deletion
 4. Preset removed from localStorage
 
@@ -684,7 +694,8 @@ Result: Shows only todos that are:
 #### Filter Results
 - Todo counts update: "Overdue (X)", "Pending (X)", "Completed (X)"
 - Sections auto-hide if empty
-- "No results" state if all filtered out
+- **"No todos match your filters."** if a populated list is filtered to zero
+- **"No todos yet. Add one above to get started."** if the list itself is empty
 
 ### Search Examples
 

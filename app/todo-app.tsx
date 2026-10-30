@@ -26,6 +26,9 @@ import {
 } from '@/lib/timezone';
 import { sectionTodos } from '@/lib/todo-sort';
 import { parseTemplateSubtasks, TEMPLATE_REMINDERS, validateTemplate } from '@/lib/template-input';
+import { applyFilters, DEFAULT_FILTER_STATE, hasActiveFilters, type FilterState } from '@/lib/filters';
+import { deletePreset, loadPresets, savePreset, type FilterPreset } from '@/lib/filter-presets';
+import { useDebounce } from '@/lib/hooks/useDebounce';
 
 type TodoAppProps = { userId: number };
 type PriorityFilter = Priority | 'all';
@@ -310,6 +313,8 @@ function TodoSection({
       : title === 'Pending'
         ? 'border-gray-200 bg-gray-50'
         : 'border-green-200 bg-green-50';
+
+  if (todos.length === 0) return null;
 
   return (
     <section aria-label={title} className={`mt-8 rounded-xl border p-4 ${sectionStyle}`}>
@@ -743,6 +748,61 @@ function TemplateChecklistPreview({ json }: { json: string | null }) {
   ) : <p className="text-sm">No checklist items</p>;
 }
 
+function filterSummary(filters: FilterState, tags: Tag[]): string {
+  const parts: string[] = [];
+  if (filters.search.trim()) parts.push(`Search: "${filters.search.trim()}"`);
+  if (filters.priority !== 'all') parts.push(`Priority: ${filters.priority}`);
+  if (filters.tagId !== 'all') parts.push(`Tag: ${tags.find((tag) => tag.id === filters.tagId)?.name ?? 'Deleted tag'}`);
+  if (filters.completion !== 'all') parts.push(
+    `Completion: ${filters.completion === 'incomplete' ? 'Incomplete' : 'Completed'}`,
+  );
+  if (filters.dueDateFrom || filters.dueDateTo) parts.push(
+    `Date (Singapore): ${filters.dueDateFrom ?? 'any'} to ${filters.dueDateTo ?? 'any'}`,
+  );
+  return parts.join(' | ');
+}
+
+function SaveFilterDialog({
+  filters, tags, onClose, onSave,
+}: {
+  filters: FilterState;
+  tags: Tag[];
+  onClose: () => void;
+  onSave: (name: string, filters: FilterState) => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [name, setName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { dialog.current?.showModal(); }, []);
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!name.trim()) { setError('Filter name is required'); return; }
+    try {
+      onSave(name.trim(), filters);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not save filter preset');
+    }
+  }
+  return (
+    <dialog ref={dialog} aria-labelledby="save-filter-heading" onCancel={onClose}
+      className="m-auto w-full max-w-lg rounded-xl p-6 shadow-xl backdrop:bg-black/40">
+      <h2 id="save-filter-heading" className="text-xl font-semibold">Save Filter</h2>
+      <p className="my-4 break-words text-sm">{filterSummary(filters, tags)}</p>
+      <form onSubmit={submit} className="space-y-4">
+        <label className="block">Filter name
+          <input autoFocus required maxLength={100} value={name}
+            onChange={(event) => setName(event.target.value)} className="block w-full rounded border p-2" />
+        </label>
+        {error && <p role="alert" className="text-red-700">{error}</p>}
+        <div className="flex justify-end gap-3">
+          <button type="button" onClick={onClose} className="rounded border px-4 py-2">Cancel</button>
+          <button type="submit" className="rounded bg-green-700 px-4 py-2 text-white">Save</button>
+        </div>
+      </form>
+    </dialog>
+  );
+}
+
 export default function TodoApp({ userId }: TodoAppProps) {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [pendingTodoIds, setPendingTodoIds] = useState<Set<number>>(() => new Set());
@@ -754,9 +814,14 @@ export default function TodoApp({ userId }: TodoAppProps) {
   const [recurrencePattern, setRecurrencePattern] = useState<RecurrencePattern>('daily');
   const [tags, setTags] = useState<Tag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
-  const [tagFilter, setTagFilter] = useState<number | 'all'>('all');
+  const [filters, setFilters] = useState<FilterState>({ ...DEFAULT_FILTER_STATE });
+  const { debouncedValue: debouncedSearch, flush: flushSearch } = useDebounce(filters.search, 300);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [presets, setPresets] = useState<FilterPreset[]>([]);
+  const [presetError, setPresetError] = useState<string | null>(null);
+  const [filterNotice, setFilterNotice] = useState<string | null>(null);
+  const [presetDraft, setPresetDraft] = useState<FilterState | null>(null);
   const [manageTags, setManageTags] = useState(false);
-  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all');
   const [activeEdit, setActiveEdit] = useState<Todo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -767,6 +832,58 @@ export default function TodoApp({ userId }: TodoAppProps) {
   const [templateBusy, setTemplateBusy] = useState(false);
   const [managerOpen, setManagerOpen] = useState(false);
   const [templateDraft, setTemplateDraft] = useState<(CreateTemplateInput & { id?: number }) | null>(null);
+  const priorityFilter = filters.priority;
+  const tagFilter = !loading && filters.tagId !== 'all' && !tags.some((tag) => tag.id === filters.tagId)
+    ? 'all' : filters.tagId;
+  const activeFilters = hasActiveFilters({ ...filters, tagId: tagFilter });
+
+  function setTagFilter(tagId: number | 'all') {
+    setFilters((current) => ({ ...current, tagId }));
+  }
+  function setPriorityFilter(priority: PriorityFilter) {
+    setFilters((current) => ({ ...current, priority }));
+  }
+  function clearSearch() {
+    setFilters((current) => ({ ...current, search: '' }));
+    flushSearch('');
+  }
+  function clearFilters() {
+    setFilters({ ...DEFAULT_FILTER_STATE });
+    flushSearch('');
+    setFilterNotice(null);
+  }
+  function applyPreset(preset: FilterPreset) {
+    const missingTag = preset.filters.tagId !== 'all' && !tags.some((tag) => tag.id === preset.filters.tagId);
+    const next = { ...preset.filters, tagId: missingTag ? 'all' as const : preset.filters.tagId };
+    setFilters(next);
+    flushSearch(next.search);
+    setFilterNotice(missingTag ? 'This preset tag no longer exists. Showing all tags instead.' : null);
+  }
+  function saveCurrentPreset(name: string, snapshot: FilterState) {
+    const saved = savePreset({
+      id: crypto.randomUUID(), name, filters: snapshot, createdAt: getSingaporeNow().toISOString(),
+    });
+    setPresets(saved);
+    setPresetError(null);
+    setPresetDraft(null);
+    setAdvancedOpen(true);
+  }
+  function removePreset(preset: FilterPreset) {
+    if (!window.confirm(`Delete preset "${preset.name}"?`)) return;
+    try {
+      setPresets(deletePreset(preset.id));
+      setPresetError(null);
+    } catch (cause) {
+      setPresetError(cause instanceof Error ? cause.message : 'Could not delete preset');
+    }
+  }
+  useEffect(() => {
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) setPresets(loadPresets(undefined, setPresetError));
+    });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -912,15 +1029,10 @@ export default function TodoApp({ userId }: TodoAppProps) {
     };
   }, []);
 
-  const filteredTodos = useMemo(
-    () =>
-      todos.filter(
-        (todo) =>
-          (priorityFilter === 'all' || todo.priority === priorityFilter) &&
-          (tagFilter === 'all' || todo.tags?.some((tag) => tag.id === tagFilter)),
-      ),
-    [todos, priorityFilter, tagFilter],
-  );
+  const filteredTodos = useMemo(() => applyFilters(todos, {
+    search: debouncedSearch, priority: priorityFilter, tagId: tagFilter,
+    completion: filters.completion, dueDateFrom: filters.dueDateFrom, dueDateTo: filters.dueDateTo,
+  }), [todos, debouncedSearch, priorityFilter, tagFilter, filters.completion, filters.dueDateFrom, filters.dueDateTo]);
   const sections = useMemo(() => sectionTodos(filteredTodos, now), [filteredTodos, now]);
 
   async function createTodo(event: FormEvent<HTMLFormElement>) {
@@ -1261,7 +1373,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
       current.map((todo) => ({ ...todo, tags: todo.tags?.filter((tag) => tag.id !== id) })),
     );
     setSelectedTagIds((current) => current.filter((tagId) => tagId !== id));
-    setTagFilter((current) => (current === id ? 'all' : current));
+    setFilters((current) => ({ ...current, tagId: current.tagId === id ? 'all' : current.tagId }));
   }
 
   return (
@@ -1385,8 +1497,24 @@ export default function TodoApp({ userId }: TodoAppProps) {
       {!loading && !error && todos.length === 0 && (
         <p className="mt-8 text-center text-gray-600">No todos yet. Add one above to get started.</p>
       )}
-      {!loading && todos.length > 0 && (
-        <div className="mt-8 flex flex-wrap items-center gap-3">
+      {!loading && (
+        <section aria-label="Search and filters" className="mt-8 space-y-4 rounded-xl border border-gray-200 bg-white p-4">
+          <div className="flex items-center gap-3">
+            <label className="flex flex-1 items-center gap-2">
+              <span aria-hidden="true">🔍</span>
+              <span className="sr-only">Search todos and subtasks</span>
+              <input type="search" placeholder="Search todos and subtasks..." value={filters.search}
+                onChange={(event) => {
+                  const search = event.target.value;
+                  setFilters((current) => ({ ...current, search }));
+                  if (search === '') flushSearch('');
+                }}
+                className="w-full rounded border border-gray-300 p-2 dark:border-gray-600 dark:bg-gray-800" />
+            </label>
+            {filters.search && <button type="button" aria-label="Clear search" onClick={clearSearch}
+              className="rounded border px-3 py-2">Clear search</button>}
+          </div>
+        <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-3">
             <span className="font-medium">Filter by priority</span>
             <select
@@ -1401,7 +1529,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
               <option value="low">Low Priority</option>
             </select>
           </label>
-          <label className="flex items-center gap-3">
+          {tags.length > 0 && <label className="flex items-center gap-3">
             <span className="font-medium">Filter by tags</span>
             <select
               aria-label="Filter by tags"
@@ -1414,8 +1542,63 @@ export default function TodoApp({ userId }: TodoAppProps) {
               <option value="all">All Tags</option>
               {tags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
             </select>
-          </label>
+          </label>}
+          <button type="button" aria-label="Advanced" aria-expanded={advancedOpen} aria-controls="advanced-filters"
+            onClick={() => setAdvancedOpen((current) => !current)}
+            className={`rounded px-3 py-2 ${advancedOpen ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-800'}`}>
+            {advancedOpen ? '▼ Advanced' : '▶ Advanced'}
+          </button>
+          {activeFilters && <>
+            <button type="button" onClick={clearFilters} className="font-medium text-red-700">Clear All</button>
+            <button type="button" onClick={() => setPresetDraft({ ...filters, tagId: tagFilter })}
+              className="font-medium text-green-700">Save Filter</button>
+          </>}
         </div>
+          {activeFilters && <p className="break-words text-sm text-gray-600" aria-label="Active filters">
+            {filterSummary({ ...filters, tagId: tagFilter }, tags)}
+          </p>}
+          {filterNotice && <p role="status" aria-label="Filter notice" className="text-sm text-blue-800">{filterNotice}</p>}
+          {presetError && <p role="alert" aria-label="Saved filter error" className="text-red-700">{presetError}</p>}
+          {advancedOpen && <div id="advanced-filters" className="space-y-4 rounded border border-blue-200 p-4">
+            <div className="flex flex-wrap gap-4">
+              <label>Completion Status
+                <select value={filters.completion}
+                  onChange={(event) => setFilters((current) => ({
+                    ...current, completion: event.target.value as FilterState['completion'],
+                  }))} className="ml-2 rounded border p-2">
+                  <option value="all">All Todos</option>
+                  <option value="incomplete">Incomplete Only</option>
+                  <option value="completed">Completed Only</option>
+                </select>
+              </label>
+              <label>Due Date From
+                <input type="date" value={filters.dueDateFrom ?? ''}
+                  onChange={(event) => setFilters((current) => ({ ...current, dueDateFrom: event.target.value || null }))}
+                  className="ml-2 rounded border p-2" />
+              </label>
+              <label>Due Date To
+                <input type="date" value={filters.dueDateTo ?? ''}
+                  onChange={(event) => setFilters((current) => ({ ...current, dueDateTo: event.target.value || null }))}
+                  className="ml-2 rounded border p-2" />
+              </label>
+            </div>
+            <p className="text-sm text-gray-600">Dates use Singapore time, inclusive of both bounds. Undated todos are excluded when a date bound is set.</p>
+            {filters.dueDateFrom && filters.dueDateTo && filters.dueDateFrom > filters.dueDateTo &&
+              <p className="text-sm text-red-700">From date is after To date.</p>}
+            <h3 className="font-medium">Saved filters (this browser only)</h3>
+            {presets.length === 0 && <p className="text-sm text-gray-600">No saved filters yet.</p>}
+            <div className="flex flex-wrap gap-2">
+              {presets.map((preset) => <span key={preset.id} className="inline-flex items-center gap-3 rounded-full border px-3 py-1">
+                <button type="button" onClick={() => applyPreset(preset)}>{preset.name}</button>
+                <button type="button" aria-label={`Delete preset ${preset.name}`} onClick={() => removePreset(preset)}
+                  className="text-red-700">Delete</button>
+              </span>)}
+            </div>
+          </div>}
+        </section>
+      )}
+      {!loading && todos.length > 0 && filteredTodos.length === 0 && (
+        <p className="mt-8 text-center text-gray-600">No todos match your filters.</p>
       )}
       {loading ? (
         <p className="mt-8" role="status">Loading todos…</p>
@@ -1490,6 +1673,8 @@ export default function TodoApp({ userId }: TodoAppProps) {
           onDelete={deleteTag}
         />
       )}
+      {presetDraft && <SaveFilterDialog filters={presetDraft} tags={tags}
+        onClose={() => setPresetDraft(null)} onSave={saveCurrentPreset} />}
     </div>
   );
 }
