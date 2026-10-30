@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { createChallengeStore } from './auth/challenge-store';
 import { getSingaporeNow } from './timezone';
 import { generateCalendarGrid } from './calendar';
+import { parseTemplateSubtasks, templateDueDate } from './template-input';
 
 export interface Holiday {
   id: number;
@@ -53,6 +54,31 @@ export interface Tag {
   user_id: number;
   name: string;
   color: string;
+}
+
+export interface CreateTemplateInput {
+  name: string;
+  description: string | null;
+  category: string | null;
+  title_template: string;
+  priority: Priority;
+  is_recurring: boolean;
+  recurrence_pattern: RecurrencePattern | null;
+  due_date_offset_minutes: number | null;
+  reminder_minutes: number | null;
+  subtasks: TemplateSubtask[];
+}
+
+export interface TemplateSubtask {
+  title: string;
+  position: number;
+}
+
+export interface Template extends Omit<CreateTemplateInput, 'subtasks'> {
+  id: number;
+  user_id: number;
+  created_at: string;
+  subtasks_json: string | null;
 }
 
 export interface CreateTodoInput {
@@ -171,7 +197,30 @@ function createAuthDatabase(connection: Database.Database) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_subtasks_todo_id ON subtasks(todo_id);
+    CREATE TABLE IF NOT EXISTS templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      category TEXT,
+      title_template TEXT NOT NULL,
+      priority TEXT NOT NULL DEFAULT 'medium',
+      is_recurring INTEGER NOT NULL DEFAULT 0,
+      recurrence_pattern TEXT,
+      due_date_offset_minutes INTEGER,
+      reminder_minutes INTEGER,
+      subtasks_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_templates_user_id ON templates(user_id);
   `);
+  const templateColumns = connection.pragma('table_info(templates)') as Array<{ name: string }>;
+  if (!templateColumns.some((column) => column.name === 'reminder_minutes')) {
+    connection.exec('ALTER TABLE templates ADD COLUMN reminder_minutes INTEGER');
+  }
+  if (!templateColumns.some((column) => column.name === 'subtasks_json')) {
+    connection.exec('ALTER TABLE templates ADD COLUMN subtasks_json TEXT');
+  }
   const todoColumns = connection.pragma('table_info(todos)') as Array<{ name: string }>;
   if (!todoColumns.some((column) => column.name === 'next_occurrence_created')) {
     connection.exec(
@@ -443,6 +492,75 @@ function createAuthDatabase(connection: Database.Database) {
     },
   };
 
+  function toTemplate(row: Template | undefined): Template | null {
+    return row ? { ...row, is_recurring: Boolean(row.is_recurring) } : null;
+  }
+  const templateById = connection.prepare(
+    'SELECT * FROM templates WHERE id = ? AND user_id = ?',
+  );
+  const templateValues = (input: CreateTemplateInput) => [
+    input.name, input.description, input.category, input.title_template, input.priority,
+    Number(input.is_recurring), input.recurrence_pattern, input.due_date_offset_minutes,
+    input.reminder_minutes, input.subtasks.length ? JSON.stringify(input.subtasks) : null,
+  ];
+  const templateDB = {
+    findAllByUser(userId: number): Template[] {
+      const rows = connection.prepare(
+        'SELECT * FROM templates WHERE user_id = ? ORDER BY created_at DESC, id DESC',
+      ).all(userId) as Template[];
+      return rows.map((row) => toTemplate(row)!);
+    },
+    findById(id: number, userId: number): Template | null {
+      return toTemplate(templateById.get(id, userId) as Template | undefined);
+    },
+    create(userId: number, input: CreateTemplateInput): Template {
+      const result = connection.prepare(
+        `INSERT INTO templates
+          (name, description, category, title_template, priority, is_recurring,
+           recurrence_pattern, due_date_offset_minutes, reminder_minutes, subtasks_json, user_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(...templateValues(input), userId, getSingaporeNow().toISOString());
+      const template = this.findById(Number(result.lastInsertRowid), userId);
+      if (!template) throw new Error('Created template could not be loaded');
+      return template;
+    },
+    update(id: number, userId: number, input: CreateTemplateInput): Template | null {
+      connection.prepare(
+        `UPDATE templates SET name = ?, description = ?, category = ?, title_template = ?,
+          priority = ?, is_recurring = ?, recurrence_pattern = ?, due_date_offset_minutes = ?,
+          reminder_minutes = ?, subtasks_json = ?
+         WHERE id = ? AND user_id = ?`,
+      ).run(...templateValues(input), id, userId);
+      return this.findById(id, userId);
+    },
+    delete(id: number, userId: number): boolean {
+      return connection.prepare('DELETE FROM templates WHERE id = ? AND user_id = ?')
+        .run(id, userId).changes === 1;
+    },
+    use(id: number, userId: number, now: Date): Todo | null {
+      return connection.transaction(() => {
+        const template = this.findById(id, userId);
+        if (!template) return null;
+        const checklist = parseTemplateSubtasks(template.subtasks_json);
+        const todo = todoDB.create(userId, {
+          title: template.title_template,
+          priority: template.priority,
+          is_recurring: template.is_recurring,
+          recurrence_pattern: template.recurrence_pattern,
+          due_date: templateDueDate(template.due_date_offset_minutes, now),
+          reminder_minutes: template.reminder_minutes,
+        });
+        const insert = connection.prepare(
+          'INSERT INTO subtasks (todo_id, title, position) VALUES (?, ?, ?)',
+        );
+        for (const subtask of checklist) insert.run(todo.id, subtask.title, subtask.position);
+        const created = todoDB.findById(todo.id, userId);
+        if (!created) throw new Error('Created template todo could not be loaded');
+        return created;
+      })();
+    },
+  };
+
   const subtaskDB = {
     findByTodoId(todoId: number): Subtask[] {
       return (subtasksByTodo.all(todoId) as Subtask[]).map((row) => toSubtask(row)!);
@@ -507,6 +625,7 @@ function createAuthDatabase(connection: Database.Database) {
     todoDB,
     holidayDB,
     subtaskDB,
+    templateDB,
     createUserWithAuthenticator,
     challengeStore: createChallengeStore(connection),
     close(): void {
@@ -523,5 +642,6 @@ export const authenticatorDB = database.authenticatorDB;
 export const todoDB = database.todoDB;
 export const holidayDB = database.holidayDB;
 export const subtaskDB = database.subtaskDB;
+export const templateDB = database.templateDB;
 export const createUserWithAuthenticator = database.createUserWithAuthenticator;
 export const challengeStore = database.challengeStore;

@@ -351,14 +351,27 @@ Save frequently used todo patterns as reusable templates for instant creation of
    - Title
    - Priority
    - Recurrence settings (if applicable)
-   - Reminder timing (if applicable)
-2. Click **"💾 Save as Template"** button (appears when title is filled)
+   - Due date (optional; converted to a relative offset, never stored as a fixed date)
+2. Click **"Save as Template"** button (appears when title is filled)
 3. Enter template details in modal:
    - **Name**: Template identifier (required)
    - **Description**: Purpose/details (optional)
    - **Category**: Group similar templates (optional)
+   - **Due-date offset (minutes)**: Whole minutes from each use to the new due date;
+     leave blank for no due date. Recurring templates require a positive offset.
+   - Title, priority, and recurrence can also be adjusted before saving.
+   - **Reminder timing**: No reminder, or 15m/30m/1h/2h/1d/2d/1w before due.
+     Reminder settings require a positive due-date offset.
+   - **Checklist**: Add, edit, remove, and move items up to define their order.
 4. Click **"Save Template"**
 5. Template saved to your library
+
+#### From an Existing Todo
+Click **"Save as Template"** on the todo row to capture its title, priority,
+recurrence, reminder, and checklist. Completed checklist items are saved as
+unchecked patterns, not completed tasks. A future due date becomes a relative
+offset; for overdue todos, choose a new offset in the editor when recurrence or
+reminders require it.
 
 ### Using Templates
 
@@ -370,7 +383,7 @@ Save frequently used todo patterns as reusable templates for instant creation of
    - Example: `"Weekly Review (Work)"`
 
 #### From Template Manager
-1. Click **"📋 Templates"** button (top navigation)
+1. Click **"Templates"** above the todo form
 2. Browse all saved templates
 3. Click **"Use"** button on any template
 4. Todo created immediately
@@ -379,11 +392,12 @@ Save frequently used todo patterns as reusable templates for instant creation of
 ### Managing Templates
 
 #### Template Manager Modal
-Access via **"📋 Templates"** button to:
+Access via **"Templates"** button to:
 - View all templates in a list
 - See template details (name, description, category)
 - Preview settings (priority, recurrence)
 - Use templates with one click
+- Filter by category and edit saved templates
 - Delete templates no longer needed
 
 #### Template Information Display
@@ -394,7 +408,8 @@ Each template shows:
 - **Priority** - color-coded badge
 - **Recurrence** - 🔄 badge if recurring
 - **Pattern** - recurrence frequency
-- **Reminder** - 🔔 badge if set
+- **Relative due-date offset** - resolved anew each time the template is used
+- **Reminder timing** and ordered checklist preview in a scrollable list
 
 #### Deleting Templates
 1. In template modal, click **"Delete"** on any template
@@ -409,14 +424,30 @@ Templates preserve:
 - ✅ Priority level (high/medium/low)
 - ✅ Recurrence settings (enabled/disabled)
 - ✅ Recurrence pattern (daily/weekly/monthly/yearly)
-- ✅ Reminder timing (minutes before due)
+- ✅ Relative due-date offset (optional)
 - ✅ Category information
 - ✅ Description
+- ✅ Reminder timing (copied to new todos)
+- ✅ Ordered subtask checklist (stored as JSON, recreated unchecked on every use)
 
 **Note**: Templates do NOT include:
-- ❌ Specific due dates (you set when creating)
-- ❌ Tags (selected when creating from template)
-- ❌ Subtasks (added after creation)
+- ❌ Specific due dates (calculated from the offset at use-time)
+- ❌ Tags (not copied; tag support is separate)
+
+Template creation/update APIs validate reminder options and checklist titles/positions
+and reject tag fields rather than silently discarding them. Templates without a due-date offset create
+undated, nonrecurring todos. Editing or deleting a template never changes existing
+todos. Duplicate template names are allowed.
+
+Template use creates the todo and all checklist items atomically: a failure does
+not leave a partial todo. A corrupted stored checklist produces an explicit error
+instead of silently dropping items. Existing templates are migrated automatically
+with empty checklists and no reminder settings.
+
+**Notification limitation:** Templates store/copy reminder timing, but browser
+notification delivery is a separate, not-yet-implemented feature. If the relative
+due-date offset is shorter than the reminder period, the calculated reminder is
+already due when the todo is created.
 
 ### Template Categories
 

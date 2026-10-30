@@ -241,10 +241,16 @@ configuration must match the address used in the browser. Do not commit
 `.env.local`; production must use HTTPS and a strong, independently generated
 `SESSION_SECRET`.
 
-The application currently implements Feature 11 (WebAuthn authentication) and
-Feature 01 (todo CRUD, Singapore-timezone due dates, priorities, and
-Overdue/Pending/Completed sections). Other advanced features described in the
-PRPs remain to be implemented.
+The application implements WebAuthn authentication, todo CRUD, priorities,
+recurring todos, subtasks, and calendar support. Templates now support saving
+the todo form's title, priority, recurrence, relative due-date timing, reminders,
+and ordered checklists, or capturing an existing todo;
+quick creation; and a manager with category filtering, editing, and confirmed
+deletion. Templates are private to each user and independent of created todos.
+Each use creates fresh unchecked subtasks in one transaction. Template reminder
+settings are copied, but browser notification delivery is not yet implemented.
+Tags are excluded by design. See [Todo Templates](USER_GUIDE.md#9-todo-templates)
+for usage.
 
 ### Project Structure Verification
 Ensure you have these key files:

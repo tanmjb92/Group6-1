@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import type { Priority, RecurrencePattern, Subtask, Todo, UpdateTodoInput } from '@/lib/db';
+import type { CreateTemplateInput, Priority, RecurrencePattern, Subtask, Template, TemplateSubtask, Todo, UpdateTodoInput } from '@/lib/db';
 import { SUBTASK_TITLE_MAX_LENGTH } from '@/lib/subtask-constants';
 import { buildTodoEditUpdate, type TodoEditDraft } from '@/lib/todo-input';
 import { calculateProgress } from '@/lib/subtask-progress';
@@ -12,6 +12,7 @@ import {
   getSingaporeNow,
 } from '@/lib/timezone';
 import { sectionTodos } from '@/lib/todo-sort';
+import { parseTemplateSubtasks, TEMPLATE_REMINDERS, validateTemplate } from '@/lib/template-input';
 
 type TodoAppProps = { userId: number };
 type PriorityFilter = Priority | 'all';
@@ -67,6 +68,7 @@ function TodoRow({
   onToggle,
   onEdit,
   onDelete,
+  onSaveTemplate,
   onAddSubtask,
   onToggleSubtask,
   onDeleteSubtask,
@@ -76,6 +78,7 @@ function TodoRow({
   onToggle: (todo: Todo, completed: boolean) => Promise<boolean>;
   onEdit: (todo: Todo) => void;
   onDelete: (todo: Todo) => void;
+  onSaveTemplate: (todo: Todo) => void;
   onAddSubtask: (todoId: number, title: string) => Promise<boolean>;
   onToggleSubtask: (todo: Todo, subtask: Subtask, completed: boolean) => Promise<boolean>;
   onDeleteSubtask: (todo: Todo, subtask: Subtask) => Promise<boolean>;
@@ -121,6 +124,11 @@ function TodoRow({
 
   return (
     <li className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+      <button type="button" aria-label={`Save "${todo.title}" as template`}
+        disabled={todo.id < 0 || todoUpdating || addingSubtask || pendingSubtaskIds.size > 0}
+        onClick={() => onSaveTemplate(todo)} className="text-sm text-blue-700 underline">
+        Save as Template
+      </button>
       <div className="flex min-w-0 items-start gap-3">
         <input
           type="checkbox"
@@ -250,6 +258,7 @@ function TodoSection({
   onToggle,
   onEdit,
   onDelete,
+  onSaveTemplate,
   onAddSubtask,
   onToggleSubtask,
   onDeleteSubtask,
@@ -260,6 +269,7 @@ function TodoSection({
   onToggle: (todo: Todo, completed: boolean) => Promise<boolean>;
   onEdit: (todo: Todo) => void;
   onDelete: (todo: Todo) => void;
+  onSaveTemplate: (todo: Todo) => void;
   onAddSubtask: (todoId: number, title: string) => Promise<boolean>;
   onToggleSubtask: (todo: Todo, subtask: Subtask, completed: boolean) => Promise<boolean>;
   onDeleteSubtask: (todo: Todo, subtask: Subtask) => Promise<boolean>;
@@ -286,6 +296,7 @@ function TodoSection({
               onToggle={onToggle}
               onEdit={onEdit}
               onDelete={onDelete}
+              onSaveTemplate={onSaveTemplate}
               onAddSubtask={onAddSubtask}
               onToggleSubtask={onToggleSubtask}
               onDeleteSubtask={onDeleteSubtask}
@@ -441,6 +452,252 @@ function TodoEditDialog({
   );
 }
 
+function TemplateEditor({
+  initial, onClose, onSave,
+}: {
+  initial: CreateTemplateInput & { id?: number };
+  onClose: () => void;
+  onSave: (input: CreateTemplateInput, id?: number) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(initial);
+  const [offset, setOffset] = useState(initial.due_date_offset_minutes?.toString() ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const savingRef = useRef(false);
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { dialog.current?.showModal(); }, []);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (savingRef.current) return;
+    const { id, ...fields } = draft;
+    const result = validateTemplate({
+      ...fields, due_date_offset_minutes: offset === '' ? null : Number(offset),
+    });
+    if (!result.success) { setError(result.error); return; }
+    setSaving(true);
+    savingRef.current = true;
+    setError(null);
+    try {
+      await onSave(result.data, id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Failed to save template');
+    } finally {
+      setSaving(false);
+      savingRef.current = false;
+    }
+  }
+
+  return (
+    <dialog
+      ref={dialog}
+      aria-labelledby="template-editor-heading"
+      onCancel={(event) => { event.preventDefault(); if (!saving) onClose(); }}
+      className="m-auto max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl p-6 shadow-xl backdrop:bg-black/40"
+    >
+      <h2 id="template-editor-heading" className="text-xl font-semibold">
+        {initial.id ? 'Edit Template' : 'Save as Template'}
+      </h2>
+      <p className="mt-2 text-sm text-gray-600">
+        Saves title, priority, recurrence, relative timing, reminders, and an unchecked checklist. Tags are not copied.
+      </p>
+      <form onSubmit={submit} className="mt-4 space-y-3">
+        <fieldset disabled={saving} className="space-y-3 disabled:opacity-60">
+          <label className="block">Template name
+            <input autoFocus required maxLength={200} value={draft.name}
+              onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+              className="block w-full rounded border p-2" />
+          </label>
+          <label className="block">Todo title
+            <input required maxLength={200} value={draft.title_template}
+              onChange={(event) => setDraft({ ...draft, title_template: event.target.value })}
+              className="block w-full rounded border p-2" />
+          </label>
+          <label className="block">Description
+            <textarea maxLength={2000} value={draft.description ?? ''}
+              onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+              className="block w-full rounded border p-2" />
+          </label>
+          <label className="block">Category
+            <input list="template-category-suggestions" maxLength={100} value={draft.category ?? ''}
+              onChange={(event) => setDraft({ ...draft, category: event.target.value })}
+              className="block w-full rounded border p-2" />
+          </label>
+          <datalist id="template-category-suggestions">
+            {['Work', 'Personal', 'Finance', 'Health', 'Education'].map((category) => <option key={category} value={category} />)}
+          </datalist>
+          <label className="block">Priority
+            <select aria-label="Priority" value={draft.priority}
+              onChange={(event) => setDraft({ ...draft, priority: event.target.value as Priority })}
+              className="block w-full rounded border p-2">
+              <option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
+            </select>
+          </label>
+          <label className="block">Due-date offset (minutes)
+            <input type="number" min={1} step={1} value={offset}
+              onChange={(event) => setOffset(event.target.value)}
+              className="block w-full rounded border p-2" />
+          </label>
+          <p className="text-sm text-gray-600">
+            Leave blank for no due date. Otherwise, each use sets a new due date this many minutes from now (Singapore time).
+          </p>
+          <label className="block">Reminder timing
+            <select aria-label="Reminder timing" value={draft.reminder_minutes ?? ''}
+              onChange={(event) => setDraft({
+                ...draft, reminder_minutes: event.target.value === '' ? null : Number(event.target.value),
+              })} className="block w-full rounded border p-2">
+              <option value="">No reminder</option>
+              {TEMPLATE_REMINDERS.map((option) => (
+                <option key={option.minutes} value={option.minutes}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          <p className="text-sm text-gray-600">
+            Reminder settings are copied to new todos. Browser notification delivery is not yet available.
+            Reminders require a due-date offset; an offset shorter than the reminder period makes it immediately due.
+          </p>
+          <fieldset className="space-y-2 rounded border p-3">
+            <legend>Checklist</legend>
+            <p className="text-sm text-gray-600">Every use creates fresh unchecked items in this order.</p>
+            {draft.subtasks.map((item, index) => (
+              <div key={index} className="flex flex-wrap items-center gap-2">
+                <label className="flex-1">Checklist item {index + 1}
+                  <input required maxLength={SUBTASK_TITLE_MAX_LENGTH} value={item.title}
+                    onChange={(event) => setDraft({
+                      ...draft, subtasks: draft.subtasks.map((entry, itemIndex) =>
+                        itemIndex === index ? { ...entry, title: event.target.value } : entry),
+                    })} className="block w-full rounded border p-2" />
+                </label>
+                <button type="button" disabled={index === 0} aria-label={`Move checklist item ${index + 1} up`}
+                  onClick={() => setDraft({
+                    ...draft,
+                    subtasks: [
+                      ...draft.subtasks.slice(0, index - 1), item, draft.subtasks[index - 1],
+                      ...draft.subtasks.slice(index + 1),
+                    ].map((entry, position) => ({ ...entry, position })),
+                  })} className="rounded border px-2 py-1">Up</button>
+                <button type="button" aria-label={`Remove checklist item ${index + 1}`}
+                  onClick={() => setDraft({
+                    ...draft, subtasks: draft.subtasks.filter((_, itemIndex) => itemIndex !== index)
+                      .map((entry, position) => ({ ...entry, position })),
+                  })} className="text-red-700 underline">Remove</button>
+              </div>
+            ))}
+            <button type="button" onClick={() => setDraft({
+              ...draft, subtasks: [...draft.subtasks, { title: '', position: draft.subtasks.length }],
+            })} className="rounded border px-3 py-1">Add checklist item</button>
+          </fieldset>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={draft.is_recurring}
+              onChange={(event) => setDraft({
+                ...draft, is_recurring: event.target.checked,
+                recurrence_pattern: draft.recurrence_pattern ?? 'daily',
+              })} />
+            Repeat
+          </label>
+          {draft.is_recurring && (
+            <label className="block">Recurrence pattern
+              <select aria-label="Recurrence pattern" value={draft.recurrence_pattern ?? 'daily'}
+                onChange={(event) => setDraft({ ...draft, recurrence_pattern: event.target.value as RecurrencePattern })}
+                className="block w-full rounded border p-2">
+                <option value="daily">Daily</option><option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option><option value="yearly">Yearly</option>
+              </select>
+            </label>
+          )}
+        </fieldset>
+        {error && <p role="alert" className="text-red-700">{error}</p>}
+        <div className="flex justify-end gap-3">
+          <button type="button" disabled={saving} onClick={onClose} className="rounded border px-4 py-2">Cancel</button>
+          <button type="submit" disabled={saving} className="rounded bg-blue-700 px-4 py-2 text-white">
+            {saving ? 'Saving...' : 'Save Template'}
+          </button>
+        </div>
+      </form>
+    </dialog>
+  );
+}
+
+function TemplateManager({
+  templates, busy, error, onClose, onUse, onEdit, onDelete,
+}: {
+  templates: Template[];
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onUse: (id: number) => void;
+  onEdit: (template: Template) => void;
+  onDelete: (template: Template) => void;
+}) {
+  const [category, setCategory] = useState('');
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { dialog.current?.showModal(); }, []);
+  const categories = [...new Set(templates.flatMap((template) => template.category ? [template.category] : []))].sort();
+  const visible = category ? templates.filter((template) => template.category === category) : templates;
+  return (
+    <dialog ref={dialog} aria-labelledby="template-manager-heading"
+      onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}
+      className="m-auto max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl p-6 shadow-xl backdrop:bg-black/40">
+      <div className="flex items-center justify-between gap-4">
+        <h2 id="template-manager-heading" className="text-xl font-semibold">Templates</h2>
+        <button type="button" disabled={busy} onClick={onClose} className="rounded border px-3 py-1">Close</button>
+      </div>
+      <label className="my-4 block">Filter templates by category
+        <select aria-label="Filter templates by category" value={category} onChange={(event) => setCategory(event.target.value)}
+          className="ml-3 rounded border p-2">
+          <option value="">All categories</option>
+          {categories.map((value) => <option key={value} value={value}>{value}</option>)}
+        </select>
+      </label>
+      {error && <p role="alert" className="text-red-700">{error}</p>}
+      {visible.length === 0 && <p>No templates in this category.</p>}
+      <ul className="space-y-4">
+        {visible.map((template) => (
+          <li key={template.id} className="space-y-2 break-words rounded border p-4">
+            <h3 className="font-semibold">{template.name}</h3>
+            {template.category && <p className="text-sm">{template.category}</p>}
+            {template.description && <p>{template.description}</p>}
+            <p>Todo: {template.title_template}</p>
+            <div className="flex flex-wrap gap-2">
+              <PriorityBadge priority={template.priority} />
+              {template.is_recurring && template.recurrence_pattern && <RecurrenceBadge pattern={template.recurrence_pattern} />}
+            </div>
+            <p className="text-sm">{template.due_date_offset_minutes === null
+              ? 'No due date' : `Due ${template.due_date_offset_minutes} minutes after use (Singapore time)`}</p>
+            {template.reminder_minutes !== null && (
+              <p className="text-sm">Reminder: {TEMPLATE_REMINDERS.find(
+                (option) => option.minutes === template.reminder_minutes,
+              )?.label ?? `${template.reminder_minutes} minutes before`} (notification delivery not yet available)</p>
+            )}
+            <TemplateChecklistPreview json={template.subtasks_json} />
+            <div className="flex gap-4">
+              <button type="button" disabled={busy} onClick={() => onUse(template.id)} className="text-blue-700 underline">Use</button>
+              <button type="button" disabled={busy} onClick={() => onEdit(template)} className="text-blue-700 underline">Edit</button>
+              <button type="button" disabled={busy} onClick={() => onDelete(template)} className="text-red-700 underline">Delete</button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </dialog>
+  );
+}
+
+function TemplateChecklistPreview({ json }: { json: string | null }) {
+  let items: TemplateSubtask[] = [];
+  let message: string | null = null;
+  try {
+    items = parseTemplateSubtasks(json).sort((a, b) => a.position - b.position);
+  } catch (error) {
+    message = error instanceof Error ? error.message : 'Cannot read template checklist';
+  }
+  if (message) return <p role="alert" className="text-red-700">{message}</p>;
+  return items.length > 0 ? (
+    <ol className="max-h-48 list-inside list-decimal overflow-y-auto text-sm">
+      {items.map((item) => <li key={item.position}>{item.title}</li>)}
+    </ol>
+  ) : <p className="text-sm">No checklist items</p>;
+}
+
 export default function TodoApp({ userId }: TodoAppProps) {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [pendingTodoIds, setPendingTodoIds] = useState<Set<number>>(() => new Set());
@@ -455,6 +712,129 @@ export default function TodoApp({ userId }: TodoAppProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => getSingaporeNow());
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(true);
+  const [templateError, setTemplateError] = useState<string | null>(null);
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [templateDraft, setTemplateDraft] = useState<(CreateTemplateInput & { id?: number }) | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/templates', { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await errorMessage(response));
+        return (await response.json()) as Template[];
+      })
+      .then(setTemplates)
+      .catch((cause: unknown) => {
+        if (cause instanceof Error && cause.name === 'AbortError') return;
+        setTemplateError(cause instanceof Error ? cause.message : 'Failed to load templates');
+      })
+      .finally(() => setTemplatesLoading(false));
+    return () => controller.abort();
+  }, []);
+
+  function openTemplateEditor() {
+    let offset: number | null = null;
+    if (dueDate) {
+      const due = fromSingaporeDateTimeLocal(dueDate);
+      if (!due || Date.parse(due) < getSingaporeNow().getTime() + 60_000) {
+        setTemplateError('Due date must be at least 1 minute in the future');
+        return;
+      }
+      offset = Math.ceil((Date.parse(due) - getSingaporeNow().getTime()) / 60_000);
+    }
+    setTemplateError(null);
+    setTemplateDraft({
+      name: '', description: null, category: null, title_template: title.trim(),
+      priority, is_recurring: isRecurring,
+      recurrence_pattern: isRecurring ? recurrencePattern : null,
+      due_date_offset_minutes: offset,
+      reminder_minutes: null, subtasks: [],
+    });
+  }
+
+  function saveTodoAsTemplate(todo: Todo) {
+    if (todo.id < 0) return;
+    const minutes = todo.due_date
+      ? Math.ceil((Date.parse(todo.due_date) - getSingaporeNow().getTime()) / 60_000) : null;
+    setTemplateError(null);
+    setTemplateDraft({
+      name: '', description: null, category: null, title_template: todo.title,
+      priority: todo.priority, is_recurring: todo.is_recurring,
+      recurrence_pattern: todo.recurrence_pattern,
+      due_date_offset_minutes: minutes !== null && minutes >= 1 ? minutes : null,
+      reminder_minutes: todo.reminder_minutes,
+      subtasks: (todo.subtasks ?? []).map(({ title, position }) => ({ title, position }))
+        .sort((a, b) => a.position - b.position).map((item, position) => ({ ...item, position })),
+    });
+  }
+
+  function editTemplate(template: Template) {
+    try {
+      const subtasks = parseTemplateSubtasks(template.subtasks_json)
+        .sort((a, b) => a.position - b.position).map((item, position) => ({ ...item, position }));
+      setTemplateDraft({
+        id: template.id, name: template.name, description: template.description,
+        category: template.category, title_template: template.title_template,
+        priority: template.priority, is_recurring: template.is_recurring,
+        recurrence_pattern: template.recurrence_pattern,
+        due_date_offset_minutes: template.due_date_offset_minutes,
+        reminder_minutes: template.reminder_minutes, subtasks,
+      });
+      setManagerOpen(false);
+    } catch (cause) {
+      setTemplateError(cause instanceof Error ? cause.message : 'Cannot edit template checklist');
+    }
+  }
+
+  async function saveTemplate(input: CreateTemplateInput, id?: number) {
+    const response = await fetch(id ? `/api/templates/${id}` : '/api/templates', {
+      method: id ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) throw new Error(await errorMessage(response));
+    const saved = (await response.json()) as Template;
+    setTemplates((current) => id ? current.map((item) => item.id === id ? saved : item) : [saved, ...current]);
+    setTemplateDraft(null);
+    setTemplateError(null);
+    if (id) setManagerOpen(true);
+  }
+
+  async function createTodoFromTemplate(id: number) {
+    if (templateBusy) return;
+    setTemplateBusy(true);
+    setTemplateError(null);
+    try {
+      const response = await fetch(`/api/templates/${id}/use`, { method: 'POST' });
+      if (!response.ok) throw new Error(await errorMessage(response));
+      const todo = (await response.json()) as Todo;
+      setTodos((current) => [...current, todo]);
+      setPriorityFilter('all');
+      setManagerOpen(false);
+    } catch (cause) {
+      setTemplateError(cause instanceof Error ? cause.message : 'Failed to use template');
+    } finally {
+      setTemplateBusy(false);
+    }
+  }
+
+  async function deleteTemplate(template: Template) {
+    if (templateBusy || !window.confirm(`Delete template "${template.name}"? Existing todos will not be changed.`)) return;
+    setTemplateBusy(true);
+    setTemplateError(null);
+    try {
+      const response = await fetch(`/api/templates/${template.id}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error(await errorMessage(response));
+      setTemplates((current) => current.filter((item) => item.id !== template.id));
+    } catch (cause) {
+      setTemplateError(cause instanceof Error ? cause.message : 'Failed to delete template');
+    } finally {
+      setTemplateBusy(false);
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -782,6 +1162,21 @@ export default function TodoApp({ userId }: TodoAppProps) {
   return (
     <div className="mt-8">
       <section className="rounded-xl bg-white p-6 shadow">
+        <div className="mb-4 flex flex-wrap items-center gap-4">
+          <button type="button" disabled={templatesLoading || templateBusy}
+            onClick={() => setManagerOpen(true)} className="rounded border px-4 py-2">Templates</button>
+          <label>Use Template
+            <select aria-label="Use Template" value="" disabled={templatesLoading || templateBusy || templates.length === 0}
+              onChange={(event) => { if (event.target.value) void createTodoFromTemplate(Number(event.target.value)); }}
+              className="ml-3 rounded border p-2">
+              <option value="">{templatesLoading ? 'Loading templates...' : 'Choose a template'}</option>
+              {templates.map((template) => <option key={template.id} value={template.id}>
+                {template.name}{template.category ? ` (${template.category})` : ''}
+              </option>)}
+            </select>
+          </label>
+        </div>
+        {templateError && !managerOpen && <p role="alert" className="mb-4 text-red-700">{templateError}</p>}
         <h2 className="text-xl font-semibold">Add a todo</h2>
         <form onSubmit={createTodo} className="mt-4 grid gap-4 sm:grid-cols-2">
           <label className="sm:col-span-2">
@@ -853,6 +1248,10 @@ export default function TodoApp({ userId }: TodoAppProps) {
             <button type="submit" className="rounded bg-blue-700 px-4 py-2 font-medium text-white">
               Add
             </button>
+            {title.trim() && (
+              <button type="button" disabled={templatesLoading} onClick={openTemplateEditor}
+                className="ml-3 rounded border px-4 py-2">Save as Template</button>
+            )}
           </div>
         </form>
       </section>
@@ -887,6 +1286,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
         <>
           <TodoSection
             title="Overdue"
+            onSaveTemplate={saveTodoAsTemplate}
             todos={sections.overdue}
             onToggle={(todo, completed) => updateTodo(todo.id, { completed })}
             onEdit={setActiveEdit}
@@ -898,6 +1298,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
           />
           <TodoSection
             title="Pending"
+            onSaveTemplate={saveTodoAsTemplate}
             todos={sections.pending}
             onToggle={(todo, completed) => updateTodo(todo.id, { completed })}
             onEdit={setActiveEdit}
@@ -909,6 +1310,7 @@ export default function TodoApp({ userId }: TodoAppProps) {
           />
           <TodoSection
             title="Completed"
+            onSaveTemplate={saveTodoAsTemplate}
             todos={sections.completed}
             onToggle={(todo, completed) => updateTodo(todo.id, { completed })}
             onEdit={setActiveEdit}
@@ -928,6 +1330,15 @@ export default function TodoApp({ userId }: TodoAppProps) {
           onCancel={() => setActiveEdit(null)}
           onSave={saveEdit}
         />
+      )}
+      {managerOpen && (
+        <TemplateManager templates={templates} busy={templateBusy} error={templateError}
+          onClose={() => setManagerOpen(false)} onUse={(id) => void createTodoFromTemplate(id)}
+          onEdit={editTemplate}
+          onDelete={(template) => void deleteTemplate(template)} />
+      )}
+      {templateDraft && (
+        <TemplateEditor initial={templateDraft} onClose={() => setTemplateDraft(null)} onSave={saveTemplate} />
       )}
     </div>
   );
