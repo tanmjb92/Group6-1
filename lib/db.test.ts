@@ -393,4 +393,114 @@ describe('todo database', () => {
     expect(database.subtaskDB.findByTodoId(todo.id)).toEqual([]);
   });
 
+  it('imports todos with remapped relationships and case-insensitive tag reuse', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('import-owner');
+    const existingTag = database.tagDB.create(user.id, { name: 'Work', color: '#111111' });
+    const result = database.todoDB.importAll(user.id, [
+      {
+        title: 'Imported project',
+        completed: true,
+        due_date: '2026-11-02T03:00:00.000Z',
+        priority: 'high',
+        is_recurring: false,
+        recurrence_pattern: null,
+        reminder_minutes: 60,
+        created_at: '2026-10-01T00:00:00.000Z',
+        subtasks: [
+          { title: 'Second step', completed: true, position: 9 },
+          { title: 'First step', completed: false, position: 9 },
+        ],
+        tags: [
+          { name: 'work', color: '#FFFFFF' },
+          { name: 'Personal', color: '#00AA00' },
+        ],
+      },
+      {
+        title: 'Another imported todo',
+        completed: false,
+        due_date: null,
+        priority: 'medium',
+        is_recurring: false,
+        recurrence_pattern: null,
+        reminder_minutes: null,
+        created_at: '2026-10-02T00:00:00.000Z',
+        subtasks: [],
+        tags: [{ name: 'PERSONAL', color: '#0000FF' }],
+      },
+    ]);
+
+    const imported = database.todoDB.findAllByUser(user.id);
+    const first = imported.find((todo) => todo.title === 'Imported project')!;
+    const second = imported.find((todo) => todo.title === 'Another imported todo')!;
+
+    expect(result).toEqual({ imported: 2, tagsCreated: 1, tagsReused: 2 });
+    expect(first).toMatchObject({
+      completed: true,
+      due_date: '2026-11-02T03:00:00.000Z',
+      priority: 'high',
+      reminder_minutes: 60,
+      created_at: '2026-10-01T00:00:00.000Z',
+    });
+    expect(first.tags).toEqual(
+      expect.arrayContaining([
+        existingTag,
+        expect.objectContaining({ name: 'Personal', color: '#00AA00' }),
+      ]),
+    );
+    expect(first.subtasks?.map(({ title, completed, position }) => ({ title, completed, position }))).toEqual([
+      { title: 'Second step', completed: true, position: 0 },
+      { title: 'First step', completed: false, position: 1 },
+    ]);
+    expect(second.tags?.[0]).toMatchObject({ name: 'Personal', color: '#00AA00' });
+    expect(first.id).not.toBe(0);
+    expect(first.subtasks?.every((subtask) => subtask.todo_id === first.id)).toBe(true);
+  });
+
+  it('rolls back every imported relation when one row fails', () => {
+    database = createDatabase(':memory:');
+    const user = database.userDB.create('import-rollback-owner');
+    database.connection.exec(`
+      CREATE TRIGGER reject_import_todo
+      BEFORE INSERT ON todos
+      WHEN NEW.title = 'Reject import'
+      BEGIN
+        SELECT RAISE(ABORT, 'Import rejected');
+      END;
+    `);
+
+    expect(() =>
+      database!.todoDB.importAll(user.id, [
+        {
+          title: 'Will roll back',
+          completed: false,
+          due_date: null,
+          priority: 'medium',
+          is_recurring: false,
+          recurrence_pattern: null,
+          reminder_minutes: null,
+          created_at: '2026-10-01T00:00:00.000Z',
+          subtasks: [{ title: 'Child', completed: false, position: 0 }],
+          tags: [{ name: 'New tag', color: '#123456' }],
+        },
+        {
+          title: 'Reject import',
+          completed: false,
+          due_date: null,
+          priority: 'low',
+          is_recurring: false,
+          recurrence_pattern: null,
+          reminder_minutes: null,
+          created_at: '2026-10-02T00:00:00.000Z',
+          subtasks: [],
+          tags: [],
+        },
+      ]),
+    ).toThrow('Import rejected');
+
+    expect(database.todoDB.findAllByUser(user.id)).toEqual([]);
+    expect(database.tagDB.findAllByUser(user.id)).toEqual([]);
+    expect(database.connection.prepare('SELECT COUNT(*) AS count FROM subtasks').get()).toEqual({ count: 0 });
+  });
+
 });
